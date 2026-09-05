@@ -28,7 +28,22 @@ The **Servlet API** is the contract between that class and the server. It is one
 
 **JSP**, JavaServer Pages, is HTML with embedded Java that the server compiles into a servlet at first request. It exists because writing HTML as string concatenation inside a servlet was unbearable. Modern applications use a template engine instead and never touch it.
 
-A **WAR**, Web Application Archive, is a zip file with a fixed layout: your static files at the top, `WEB-INF/web.xml` as the deployment descriptor, `WEB-INF/classes/` and `WEB-INF/lib/` for code. Servlet 2.2 introduced it in 1999 and it has not changed since. It is the deliverable you were handed.
+A **WAR**, Web Application Archive, is a zip file with a fixed layout. Servlet 2.2 introduced it in 1999 and it has not changed since. It is the deliverable you were handed.
+
+```
+app.war
+├── index.html               static content, served as-is
+├── css/  js/  images/       more static content
+├── META-INF/
+│   ├── MANIFEST.MF          jar manifest, build metadata
+│   └── context.xml          Tomcat-only: per-application context settings
+└── WEB-INF/                 never served to clients
+    ├── web.xml              deployment descriptor: servlets, mappings, filters, session config
+    ├── classes/             the application's own compiled classes and resource files
+    └── lib/                 third-party jars the application depends on
+```
+
+Everything under `WEB-INF/` is invisible over HTTP; everything outside it is a URL. `unzip -l app.war` shows you what you were given, and `unzip -p app.war WEB-INF/web.xml` shows what it expects of the server. Since Servlet 3.0 `web.xml` may be nearly empty, with servlets declared by annotations inside the classes instead, so an empty descriptor does not mean an empty application.
 
 ## Tomcat
 
