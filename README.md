@@ -20,6 +20,24 @@ In 2017 Oracle, which had bought Sun in 2010, handed Java EE to the Eclipse Foun
 
 One more collision: "Jakarta" was also the name of Apache's umbrella project for Java code from 1999 to 2011. Tomcat, Ant and Commons were born there. Eclipse reused the name in 2018 with Apache's permission. When you see "jakarta" today, it means the Eclipse one.
 
+## The JVM, and what you are actually running
+
+Java source compiles to **bytecode**, an instruction set for a machine that does not exist. The **JVM**, Java Virtual Machine, is the program that executes it: it loads `.class` files, verifies them, interprets the bytecode, then compiles the hot paths to native code at runtime (the JIT, just-in-time compiler) and manages memory with a garbage collector. `java` on your server is the JVM plus the standard library. When you `ps`, you see one `java` process per application server, and that process is the JVM; Tomcat, Jetty and the WAR are all just classes loaded inside it.
+
+Two consequences matter operationally.
+
+Memory is not what `free` tells you. The JVM reserves a **heap** for objects, sized by `-Xms` (initial) and `-Xmx` (maximum), and will happily use all of `-Xmx` before collecting, so a JVM sitting at its maximum heap is not leaking, it is behaving as configured. On top of the heap sit thread stacks, JIT code cache, metaspace for loaded classes and native buffers, so the memory the process actually occupies (the RES column in `top`) is the heap plus a few hundred megabytes. Since JDK 10 the default `-Xmx` is one quarter of the machine's memory. The JVM reads that figure from the cgroup it runs in, not from `/proc/meminfo`. On bare metal or a VM, that is the total RAM of the machine. Inside a Docker container started with `--memory=2g`, that is 2 GB, so the default heap is 512 MB. Before JDK 10 the JVM read `/proc/meminfo` instead. Java 8 behaved the same way until a late 2018 update. On a 64 GB host the JVM saw the full memory and sized its heap to 16 GB (the aforementioned quarter). It did not read the cgroup, so it had no idea a 2 GB limit existed and planned as if it had 16 GB to fill. The kernel enforced the limit regardless: the moment the heap grew past 2 GB the OOM killer shot the process. That is why every old Java-in-Docker guide tells you to set `-Xmx` by hand. On a 16 GB server dedicated to one application that leaves 12 GB unused, so always set `-Xmx` explicitly; a common starting point is half to three quarters of the machine, leaving room for the non-heap parts of the process and the OS page cache.
+
+Startup is slow and then fast. The interpreter runs first, the JIT kicks in after thousands of invocations, so a JVM is at its slowest in its first minute and at its fastest after an hour. Restarting to deploy throws that away every time, which is one more reason the one-WAR-per-JVM practice hurts.
+
+Names you will meet: **JDK**, Java Development Kit, is the compiler plus the runtime; **JRE**, Java Runtime Environment, was the runtime alone and is no longer shipped separately, so you install a JDK even to run things, the `-headless` package variants just omit the desktop libraries. **OpenJDK** is the open-source codebase; Oracle, Red Hat, Eclipse Temurin, Amazon Corretto, Azul and Microsoft all build it, pass the same compatibility kit, and differ in support terms and patch cadence, not behaviour. Version numbering went 1.0 to 1.8, then 9 onward with a new release every six months and a long-term-support release every two years: 8, 11, 17, 21, 25. Applications declare the minimum they compile against; Spring Boot 2 era applications want 11 or 17, Jetty 12 wants 17.
+
+Which JDK to install: the distribution package, `java-17-openjdk-headless` on EL, `openjdk-17-jre-headless` on Debian. It is the same OpenJDK, patched by the distro, updated by `dnf` or `apt` with everything else, and inside the distro's security process. A vendor tarball is for two cases only: a version the distribution does not ship, or a container image with a specific JDK baked in. Pick an LTS version and never a six-month release or an early-access build: vendors support only LTS, ship security updates quarterly for those, and reserve the right to ship nothing for anything else. Do not start anything new on 8; it is 2014 code kept alive on paid support.
+
+Why old applications refuse to run on a new JDK: Java 9 introduced the module system and Java 11 removed the Java EE pieces that had been bundled with the runtime since the 2000s (XML binding, SOAP, activation, CORBA). An application compiled against 8 that used them starts on 11 and dies with `ClassNotFoundException: javax.xml.bind.JAXBContext` or similar. That is the whole of the 8 to 11 pain: not the language, the missing jars. Applications fixed it by adding those libraries as ordinary dependencies, and anything maintained since 2019 has done so; anything that has not is telling you something about its maintenance.
+
+Flags go on the `java` command line. `-X` flags are standard across JVMs (`-Xmx`), `-XX:` flags are HotSpot-specific and change between versions (`-XX:+UseG1GC`), `-D` sets system properties the application reads (`-Duser.timezone=UTC`). Where those flags live is a per-server question, and one of the things that separates Tomcat from Jetty below.
+
 ## Servlets, JSP and the WAR
 
 A **servlet** is a Java class that the server instantiates once and calls for every HTTP request. The server owns the sockets, the threads and the lifecycle; the class gets a request object and a response object. It replaced CGI, which forked a process per request, and in 1996 forking a JVM per request took seconds. One instance serves all requests concurrently, so a servlet is effectively a singleton and its instance fields are shared state.
@@ -43,7 +61,7 @@ app.war
     └── lib/                 third-party jars the application depends on
 ```
 
-Everything under `WEB-INF/` is invisible over HTTP; everything outside it is a URL. `unzip -l app.war` shows you what you were given, and `unzip -p app.war WEB-INF/web.xml` shows what it expects of the server. Since Servlet 3.0 `web.xml` may be nearly empty, with servlets declared by annotations inside the classes instead, so an empty descriptor does not mean an empty application.
+The server refuses to serve anything under `WEB-INF/` as a file: a request for `/WEB-INF/web.xml` gets a 404 by specification, so configuration and code cannot be downloaded by clients even though they sit inside the same archive as the static files. Nor can a client execute a class by asking for it. Classes never map to URLs. `web.xml` (or annotations in the classes) declares servlets by name and assigns each one URL patterns, for example `/api/*` to `ApiServlet` and `/login` to `LoginServlet`. When a request arrives, the server matches its path against those patterns and calls the one servlet that matches; a path that matches nothing gets a 404. A class under `WEB-INF/classes/` that no mapping names is unreachable from outside. This is the opposite of CGI or PHP, where a file on disk under the document root is executable because it is there. Everything outside `WEB-INF/` is a URL. `unzip -l app.war` shows you what you were given, and `unzip -p app.war WEB-INF/web.xml` shows what it expects of the server. Since Servlet 3.0 `web.xml` may be nearly empty, with servlets declared by annotations inside the classes instead, so an empty descriptor does not mean an empty application.
 
 ## Tomcat
 
@@ -96,7 +114,13 @@ Jetty starts, reads 2, loads the WAR from 2, the WAR starts, reads 3, works on 4
 
 | Java word | What you would call it |
 |---|---|
-| Java SE | the runtime |
+| JVM | the runtime process, the thing in `ps` |
+| JDK | the runtime plus compiler, the package you install |
+| bytecode | the portable machine code the JVM executes |
+| heap | the memory pool for objects, `-Xmx` sets the ceiling |
+| GC | the garbage collector, the JVM's memory reclaimer |
+| JIT | the runtime compiler that makes it fast after warm-up |
+| Java SE | the runtime and standard library |
 | Java EE, Jakarta EE | the server-side spec bundle |
 | servlet | a request handler class |
 | servlet container | the application server |
@@ -109,6 +133,7 @@ Jetty starts, reads 2, loads the WAR from 2, the WAR starts, reads 3, works on 4
 | module | a plugin definition plus its ini |
 | environment | a Servlet API version (ee8, ee9, ee10) |
 | bean | a class with getters and setters |
+| record | an immutable struct, Java 16 onward |
 | JMX | the JVM's management interface |
 | JDBC | the database driver API |
 | classpath | the library search path |
@@ -116,6 +141,27 @@ Jetty starts, reads 2, loads the WAR from 2, the WAR starts, reads 3, works on 4
 ## Other words you will meet
 
 **Bean**: a Java class with a no-argument constructor and `getX()` and `setX()` pairs. Sun coined it in 1996 for GUI components, then reused the word for everything: Enterprise JavaBeans for remoting, MBeans for management, Spring beans for dependency injection. Same convention, unrelated things.
+
+**Record**: the modern replacement for the data-carrier half of the bean. Standard since Java 16 (2021). The bean version of a user object:
+
+```java
+public class User {
+    private final String name;
+    private final int age;
+    public User(String name, int age) { this.name = name; this.age = age; }
+    public String getName() { return name; }
+    public int getAge() { return age; }
+    // equals, hashCode, toString: thirty more lines
+}
+```
+
+The record version:
+
+```java
+public record User(String name, int age) {}
+```
+
+Constructor, accessors, `equals`, `hashCode` and `toString` are generated by the compiler. Operationally it means nothing, but if you read stack traces or configuration classes from a modern application you will see it, and it tells you the code base is JDK 17 or later.
 
 **EJB**, Enterprise JavaBeans: Java EE's remoting component model. It ran over RMI/IIOP, which is CORBA's wire protocol, so an EJB was a Java-only CORBA object with container-managed transactions wrapped around it. Same distributed-object idea, same failure modes, dead for the same reasons. You will see the acronym in old documentation and nowhere else.
 
