@@ -14,7 +14,7 @@ You have been handed a WAR file and told to run it. Nobody told you what a WAR i
 4. There are four directories: the server program, the server instance config, the application's own config, the application's data. Confusion comes from collapsing them. Tomcat's tarball collapses the first two; Jetty refuses to.
 5. One application per JVM, restart to deploy, delete what you do not run.
 
-The rest of this document is why each of those is true.
+The rest of this document is why each of those is true, and why you should walk softly and carry a big stick with a rusty nail on one end around Java developers.
 
 ## Why this document exists
 
@@ -146,6 +146,10 @@ Tomcat is three named layers, and the names show up in file paths, log lines and
 - **Jasper**: the JSP compiler. Turns a `.jsp` page into a servlet class the first time it is requested, and stores the result under `work/`. Idle if the application has no JSPs.
 
 Coyote listens, Catalina routes and runs, Jasper compiles pages.
+
+### Tarball or package
+
+This document describes the upstream tarballs. The packages are not universal; most production Java servers run from a tarball. Tomcat is packaged by every major distribution, but at whatever version the release froze on, with paths rearranged as described below, and a Tomcat 9 package on a distribution that ships 10.1 is not available. Jetty is packaged only by Debian: trixie has `jetty12` at 12.0.17 next to the old `jetty9`, Ubuntu inherits it, and EL and Fedora have nothing, so on AlmaLinux the Maven Central tarball is the only route. Application vendors, for their part, document and support the tarball layout and nothing else. The package is the right choice when it exists at the version you need and you want the distribution's security updates; otherwise, and usually, it is the tarball under `/opt`, and you become the packager.
 
 ### What the Tomcat tarball contains
 
