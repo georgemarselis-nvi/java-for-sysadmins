@@ -125,7 +125,15 @@ To find the annotations, the server scans every class under `WEB-INF/classes/` a
 
 Tomcat exists because Sun needed a reference implementation for the Servlet and JSP specifications. James Duncan Davidson wrote it at Sun in the late 1990s, and Sun donated it to Apache in 1999, where it became Jakarta Tomcat 3.0 implementing Servlet 2.2 and JSP 1.1. A reference implementation is the executable definition of a specification. Performance and operability were not goals, and Tomcat was never redesigned as a product afterwards. Every complaint a sysadmin has about it follows from that.
 
-### What the tarball contains
+Tomcat is three named layers, and the names show up in file paths, log lines and `server.xml`:
+
+- **Coyote**: the connector layer. Opens the sockets, speaks HTTP/1.1, HTTP/2 and AJP (see the end of the document), parses the request, hands it over. Every `Connector` element in `server.xml` is a Coyote instance.
+- **Catalina**: the servlet container. Takes the parsed request, routes it through `Engine`, `Host` and `Context`, calls whichever servlet the application's URL mappings assign to that path, returns the response. The `Engine name="Catalina"` line in `server.xml`, the `conf/Catalina/` directory, `catalina.sh`, `catalina.properties` and `catalina.out` are all named after this layer.
+- **Jasper**: the JSP compiler. Turns a `.jsp` page into a servlet class the first time it is requested, and stores the result under `work/`. Idle if the application has no JSPs.
+
+Coyote listens, Catalina routes and runs, Jasper compiles pages.
+
+### What the Tomcat tarball contains
 
 Unpack `apache-tomcat-9.0.x.tar.gz` and you get one tree:
 
@@ -158,11 +166,11 @@ apache-tomcat-9.0.x/
 
 Program, configuration, applications, logs and scratch space are all children of one directory. That is the root of the operational trouble: an upgrade means unpacking the new tarball next to the old one and copying `conf/`, `webapps/` and `setenv.sh` across by hand, then diffing `server.xml` against the new default to see what changed.
 
-Tomcat does have the same split Jetty has, under the names `CATALINA_HOME` (the program) and `CATALINA_BASE` (the instance). Set both, give the base its own `conf/`, `webapps/`, `logs/`, `temp/` and `work/`, and the program directory stays clean. Almost nobody does this by hand because the documentation mentions it in passing and every tutorial assumes the one-tree layout. The distro packages do it for you and each does it differently: on Debian the program is `/usr/share/tomcat9`, the instance is `/var/lib/tomcat9`, and `conf/` is a symlink to `/etc/tomcat9`; on EL the paths are `/usr/share/tomcat` and `/var/lib/tomcat` with `/etc/tomcat`. So the first question on any Tomcat box is "tarball or package", because it decides where every file is.
+Tomcat (and, as we will see later, Jetty) has a program-versus-instance split, under the names `CATALINA_HOME` (the program) and `CATALINA_BASE` (the instance). Both are environment variables read by `catalina.sh`. `CATALINA_HOME` says where `bin/` and `lib/` are, so the script can find the jars; `CATALINA_BASE` says where `conf/`, `webapps/`, `logs/`, `temp/` and `work/` are, so the server can find its configuration and applications. When only `CATALINA_HOME` is set, `CATALINA_BASE` defaults to the same directory and you get the one-tree layout. Point `CATALINA_BASE` at a second directory containing only those five subdirectories and the program directory stays clean: `/opt/tomcat/9.0.x` is the unpacked tarball, `/opt/tomcat/instances/app` is yours. Almost nobody does this by hand because the documentation mentions it in passing and every tutorial assumes the one-tree layout. The distro packages do it for you and each does it differently: on Debian the program is `/usr/share/tomcat9`, the instance is `/var/lib/tomcat9`, and `conf/` is a symlink to `/etc/tomcat9`; on EL the paths are `/usr/share/tomcat` and `/var/lib/tomcat` with `/etc/tomcat`. So the first question to ask on any Tomcat box you did not build is "was this installed from the tarball or from the distro package". A tarball install is one tree somewhere under `/opt` or `/usr/local`, started by `bin/startup.sh` or a hand-written systemd unit, with `setenv.sh` for the JVM flags. A typical package install is split across `/usr/share`, `/var/lib`, `/etc` and `/var/log`, started by `systemctl start tomcat9`, with the JVM flags in `/etc/default/tomcat9` or `/etc/sysconfig/tomcat`. Every path in the rest of this section and every tutorial you will read assumes one or the other, and following tarball instructions on a package install (or the reverse) is how people end up with two `server.xml` files and no idea which one is live. `ps -ef` shows the `java` command line with `-Dcatalina.home=` and `-Dcatalina.base=` in it; that will answer your question in one look.
 
 ### server.xml
 
-This is the file you will spend your time in. A stripped-down but real one:
+This is the file you will spend your time in. Here is a real `server.xml`, stripped down to the basics:
 
 ```xml
 <?xml version="1.0" encoding="UTF-8"?>
@@ -183,7 +191,7 @@ This is the file you will spend your time in. A stripped-down but real one:
 </Server>
 ```
 
-Read it as a tree of Java objects, because that is what it is. `Server` is the process; its `port="8005"` is a socket on localhost that stops the server when it receives the string `SHUTDOWN`. `Service` groups one engine with its connectors. `Connector` is a listening socket: port, protocol, thread pool size. `Engine` is the request router; `defaultHost` says which host answers when the request's `Host:` header matches nothing. `Host` is a virtual host, and `appBase="webapps"` is why dropping a WAR there works. `Valve` is a filter that runs on every request through that host, here an access log; `className` is the Java class to instantiate, and every attribute becomes a setter call on it.
+Read it as a tree of Java objects, because that is what it is. `Server` is the process; its `port="8005"` is a socket on localhost that stops the server when it receives the string `SHUTDOWN`. `Service` groups one `Engine` with the `Connector`s that feed it; the `Engine` (defined a few lines down) is the request router, and a `Service` exists so that one router can be fed by several listening sockets (HTTP on 8080 and TLS on 8443, for instance). A `Server` may contain several `Service`s, each with its own `Engine` and sockets, but the shipped file has one and nobody adds another. `Connector` is a listening socket: port, protocol, thread pool size. `Engine` is that router; `defaultHost` says which host answers when the request's `Host:` header matches nothing. `Host` is a virtual host, and `appBase="webapps"` is why dropping a WAR there unpacks the archive automatically. `Valve` is a filter that runs on every request through that host, in our example an access log; `className` is the Java class to instantiate, and every attribute becomes a setter call on it.
 
 That last point is the whole design in one sentence. To change access log format you edit a `pattern` attribute on a `Valve` element, because `AccessLogValve` has a `setPattern` method. To add TLS you add a second `Connector` with `SSLEnabled="true"` and a nested `SSLHostConfig` element, because that is the object graph. The Tomcat documentation for `server.xml` is therefore a list of classes and their attributes, not a list of things you might want to do.
 
@@ -192,6 +200,8 @@ That last point is the whole design in one sentence. To change access log format
 `conf/web.xml` is a default deployment descriptor that every application's own `web.xml` is layered on top of. It is where the default servlet (the one that serves static files) and the JSP servlet are declared, and where the global session timeout of 30 minutes lives. If an application does not set its own timeout, this is where it comes from.
 
 `conf/context.xml` holds settings applied to every deployed application: session persistence, resource definitions such as JNDI database pools, cookie settings. A per-application override goes in `conf/Catalina/localhost/<app>.xml` or inside the WAR at `META-INF/context.xml`, and the precedence between those three is where people lose afternoons. The path is the object tree again: `Catalina` is the `Engine` name from `server.xml`, `localhost` is the `Host` name, and there is one file per context under it. It says `localhost` rather than your FQDN because Tomcat's `Host` is a virtual host keyed by the HTTP `Host:` header, and Apache named the default one `localhost` so the tarball works on any machine unedited. Add `<Host name="app.example.org">` to `server.xml` and the matching directory becomes `conf/Catalina/app.example.org/`.
+
+About `lib/` and JDBC drivers: the driver belongs inside the WAR, in `WEB-INF/lib/`, where the developer's build puts it, because the application is what talks to the database. It goes in Tomcat's `lib/` only when Tomcat itself talks to the database, which happens in one case: a connection pool defined as a JNDI resource in `context.xml`, where Tomcat opens the connections and hands them to the application. Old tutorials say `lib/` unconditionally, which loads the driver in the server's class loader, keeps it alive across every redeploy of the application, and is one of the leak sources the memory-leak listener exists to clean up. If the developer did not give you a JNDI resource to configure, do not touch `lib/`.
 
 `conf/catalina.properties` sets the class loader search paths and a handful of global switches. You touch it once, to turn off jar scanning for jars you know contain no annotations, because that scan is most of Tomcat's startup time.
 
@@ -428,6 +438,8 @@ On Tomcat the same four exist, but 1 and 2 are usually one tree, which is why pe
 | record | an immutable struct, Java 16 onward |
 | JMX | the JVM's management interface |
 | JDBC | the database driver API |
+| AJP | Tomcat's binary protocol for a reverse proxy in front of it; use HTTP instead |
+| Coyote, Catalina, Jasper | Tomcat's connector layer, servlet container and JSP compiler |
 | classpath | the library search path |
 
 ## Other words you will meet
@@ -458,6 +470,8 @@ Constructor, accessors, `equals`, `hashCode` and `toString` are generated by the
 **EJB**, Enterprise JavaBeans: Java EE's remoting component model. It ran over RMI/IIOP, which is CORBA's wire protocol, so an EJB was a Java-only CORBA object with container-managed transactions wrapped around it. Same distributed-object idea, same failure modes, dead for the same reasons. You will see the acronym in old documentation and nowhere else.
 
 **JMX**, Java Management Extensions: the JVM's built-in management interface. Components register MBeans with readable attributes and callable operations; jconsole, VisualVM or a Prometheus exporter connects over RMI to read thread counts, session counts or trigger a garbage collection. Useful in a monitoring stack, dead weight in a lab.
+
+**AJP**, Apache JServ Protocol: a binary protocol Tomcat speaks on port 8009 so that a web server in front of it (Apache httpd with `mod_jk` or `mod_proxy_ajp`, or nginx with a third-party module) can forward requests to it more cheaply than re-encoding them as HTTP. It dates from 1997, when Tomcat could not serve static files or TLS well and Apache httpd did both, so the standard layout was httpd in front for static content and TLS, AJP behind for the servlets. Neither reason holds now: Tomcat serves static files and TLS fine, and HTTP/1.1 keep-alive makes the re-encoding cost negligible. AJP survives in old configurations and in a 2020 CVE (Ghostcat) that let anyone who could reach 8009 read files out of the WAR. Reverse proxy over plain HTTP with `mod_proxy_http` or nginx's `proxy_pass`, and if you inherit a Tomcat with an AJP connector enabled and nothing using it, remove the `Connector` from `server.xml`; since 9.0.31 it binds to localhost only by default, which is the project's own admission.
 
 **Spring, Spring Boot**: not Java EE. A framework that grew as a reaction to Java EE's weight, using plain classes with dependency injection instead of EJBs. Spring Boot bundles a servlet container inside the application jar so you do not need Tomcat or Jetty at all. When a Spring Boot application is instead built as a plain WAR, it runs on either.
 
