@@ -264,9 +264,9 @@ The same applies to Jetty's `work/` and to any exploded directory on any server:
 
 `logs/catalina.out` is stdout and stderr of the JVM, appended forever, never rotated by Tomcat itself. Startup messages, stack traces from failed deployments and anything the application prints all land here. `logs/catalina.<date>.log` and `logs/localhost.<date>.log` are Tomcat's own logging, rotated daily by `logging.properties`. `logs/localhost_access_log.<date>.txt` is the access log from the valve above. The distro packages send `catalina.out` to journald or `/var/log/tomcat9/`. When something is wrong, `catalina.out` is where the answer is, and on a busy server it is gigabytes.
 
-### Why it is heavy
+### Why Tomcat is heavy on resources
 
-Tomcat is not heavy because of the engine. It is heavy because it starts from everything: manager, host-manager, docs and examples applications, a JSP compiler, an autodeployer polling `webapps/`, JMX registered for every component, a default pool of 200 threads. Strip it to one connector and one WAR, delete everything in `webapps/` but your application, and it is 15 MB of jars starting in under a second. The difference from Jetty is direction: Tomcat starts from everything and you remove; Jetty starts from nothing and you add.
+Tomcat is not heavy because of the engine. It is heavy because it starts from everything: manager, host-manager, docs and examples applications, a JSP compiler, an autodeployer polling `webapps/`, JMX registered for every component, a default pool of 200 threads. Strip it to one connector and one WAR, delete everything in `webapps/` but your application, and it is 15 MB of jars starting in under a second. The difference from Jetty is direction: Tomcat starts from everything and you remove; Jetty, as we shall see later, starts from nothing and you add.
 
 ### Tomcat 8, 9, 10, 10.1, 11: which one and why
 
@@ -280,13 +280,21 @@ Each Tomcat major version implements exactly one Servlet specification version, 
 | 10.1 | 6.0 | `jakarta` | Jakarta EE 10 | 11 | Maintained |
 | 11.0 | 6.1 | `jakarta` | Jakarta EE 11 | 17 | Maintained |
 
-The line that matters is between 9 and 10: 9 is `javax`, everything from 10 on is `jakarta`. A WAR compiled against `javax.servlet` deploys on Tomcat 9 and fails on Tomcat 10 with `ClassNotFoundException: javax.servlet.http.HttpServlet`, because that class no longer exists in the server. A WAR compiled against `jakarta.servlet` fails the same way on 9. Nothing else about the WAR needs to change; the rename is the entire incompatibility. Tomcat 10 ships a migration tool that rewrites the package names inside an old WAR's class files at deploy time, which works for simple applications and not for the ones that matter.
+The line that matters is between 9 and 10: 9 is `javax`, everything from 10 on is `jakarta`. A WAR compiled against `javax.servlet` deploys on Tomcat 9 and fails on Tomcat 10 with `ClassNotFoundException: javax.servlet.http.HttpServlet`, because that class no longer exists in the server. A WAR compiled against `jakarta.servlet` fails the same way on 9. Nothing else about the WAR needs to change; the rename is the entire incompatibility. Tomcat 10 ships a migration tool that rewrites the package names inside an old WAR's class files, which works for simple applications and not for the ones that matter; how to use it, and how it fails, is at the end of this section.
 
 So the rule is: look at the WAR, not the calendar. `unzip -l app.war` and check whether `WEB-INF/lib/` contains jars named `javax.servlet-api` or `jakarta.servlet-api`, or ask the developer which Spring Boot generation it is: Spring Boot 2 is `javax` and needs Tomcat 9, Spring Boot 3 is `jakarta` and needs 10.1 or 11. Tomcat 9 is not old for being the lower number; it is the current server for the entire `javax` world, receives the same security fixes as 11, and will for years, because that world is larger than the `jakarta` one.
 
 10.0 existed for eighteen months as the rename release with no new features and is dead; treat any mention of it as 10.1. 8.5 is end of life and a `javax` application on it moves to 9 with no changes.
 
 This is the situation Jetty 12 was designed to escape: one Jetty serves both `javax` and `jakarta` WARs from one installation, with `ee8` and `ee10` as modules instead of as separate products.
+
+If you must run a `javax` WAR on Tomcat 10.1 or 11 and the developer will not move it, you have two tools and one argument.
+
+The first tool is the Tomcat migration tool for Jakarta EE, `jakartaee-migration`, a jar from the Tomcat project that rewrites every `javax.*` reference inside the WAR's class files and descriptors to `jakarta.*` and writes a new WAR: `java -jar jakartaee-migration-*-shaded.jar app.war app-jakarta.war`. Tomcat 10.1 and 11 can also do this at deploy time, by dropping the WAR into `webapps-javaee/` instead of `webapps/`, which runs the same converter and deploys the result. It works when the application and every jar in `WEB-INF/lib/` only use the servlet API through the standard packages. It fails, at runtime and not at conversion, when a library reflects on class names it built as strings, bundles its own copy of a `javax` API, or depends on a framework version that has no `jakarta` counterpart. Spring Boot 2 is the common case of the last one; it has no `jakarta` build, so a Spring Boot 2 WAR converted this way runs until the first code path that touches an unconverted class and then throws `NoClassDefFoundError`. Test the converted WAR on a copy of production data before believing it.
+
+The second tool is not converting at all: run Tomcat 9. It is a maintained release with the same security fix cadence as 11, and a `javax` application on Tomcat 9 behind a reverse proxy is a supported configuration, not a legacy one. The only thing you lose is HTTP/2 and TLS improvements that arrive in 11 first, which the reverse proxy you are supposed to have in front provides anyway.
+
+The argument is about the developer, not the server. An application that cannot leave `javax` cannot take security updates to any of its frameworks either, since Spring 6, Hibernate 6 and every current library are `jakarta` only. The conversation to have is "when does this application move to Spring Boot 3", with the date in writing, and Tomcat 9 with the migration tool in reserve buys the time until then. If the answer is never, the application is archived software and should be run as such: isolated, proxied, and with a decommissioning date.
 
 ## Jetty
 
