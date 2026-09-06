@@ -8,27 +8,27 @@ You have been handed a WAR file and told to run it. Nobody told you what a WAR i
 
 ## The model in five lines
 
-1. `java` is one process, the JVM. Tomcat, Jetty and your application are all classes loaded inside it. You will not see individual threads. The process startup has a built-in memory ceiling is set by `-Xmx`. You set it.
-2. The application arrives as a WAR: a zip file with `WEB-INF/web.xml` describing which URL goes to which class. Everything under `WEB-INF/` and `META-INF/` is hidden from clients; everything else is a URL.
-3. Tomcat and Jetty are the programs that load the WAR and serve it. Each implements a version of the so-called Servlet API; the WAR must have been built against the same version of the API.
-4. There are four directories: the server program, the server instance config, the application's own config, the application's data. Confusion exists because the documentation collapses them into one location. Tomcat's tarball collapses the first two; Jetty refuses to.
-5. One application per JVM, restart to deploy, delete what you do not run.
+1. `java` is one process, the JVM. Tomcat, Jetty and your application are all classes loaded inside it. There are no worker processes: everything is threads inside that one process, and `top -H` shows them. Its memory ceiling is set by `-Xmx`, and you set it.
+2. The application arrives as a `.war` file: a zip file with `WEB-INF/web.xml` describing which URL goes to which class. Everything under `WEB-INF/` and `META-INF/` is hidden from clients; everything else is a URL.
+3. Tomcat and Jetty are the programs that load the `.war` file and serve it. Each implements a version of the so-called Servlet API; the WAR archive must have been built against the same version of the API.
+4. There are four directories: the server program, the server instance config, the application's own config, the application's data. Confusion exists because the documentation collapses these directories into one location. Tomcat's tarball puts the program and the instance config in the same directory tree; Jetty ships them as two separate trees and cannot run with them merged.
+5. For your own sanity: one application per JVM, restart to deploy, delete what you do not run.
 
-The rest of this document explains each of those, and why you should walk softly and carry a big stick with a rusty nail on one end around Java developers.
+The rest of this document explains each of these points, and why, around Java developers, you should walk softly and carry a big stick with a rusty nail on one end.
 
 ## Why this document exists
 
-Java has its own vocabulary for things you already know, and the words point at the wrong Linux concepts. "Home" is not `$HOME`. "Container" is not Docker. "Module" is not a kernel module. "Context" is not a kubectl context. Once each word is translated, what is underneath is a program, a config directory, a plugin list and an application. The people who know this have not had to explain it to an outsider, and there is no document that does.
+Java has its own vocabulary for things you already know, and the words point at the wrong Linux concepts. "Home" is not `$HOME`. "Container" is not Docker. "Module" is not a kernel module. "Context" is not a kubectl context. Once each word is translated, what is underneath is a program, a config directory, a plugin list and an application. There is no document that does this, because the people who know it have not had to explain it to an outsider, and those who did learn it did not write their knowledge down.
 
-## A short history, with Sun in mind
+## A short history of Java, with Sun in mind
 
 Sun Microsystems released Java in 1995 and bet the company on it. The name went on everything: phones, smart cards, browsers, servers. Three sizes of the same product emerged:
 
-- **Java SE**, Standard Edition: the language, the virtual machine and the standard library. What `java` on your server is.
+- **Java SE**, Standard Edition: the language, the virtual machine and the standard library. What `java` on your server currently is.
 - **Java EE**, Enterprise Edition: a set of specifications layered on top of SE for the things every server application needs. HTTP handling, transactions, messaging, database mapping, remoting.
 - **Java ME**, Micro Edition: phones and set-top boxes. Dead.
 
-Java EE was specifications, not code. Sun wrote the contract, wrote a reference implementation to prove the contract could be met, wrote a compatibility test kit, and licensed the "J2EE compatible" brand to vendors: IBM WebSphere, BEA WebLogic, Oracle, later JBoss. Sun made money from the brand and from the Solaris and SPARC hardware underneath, not from the software. The buyers were banks and telcos, the same buyers COBOL had, through the same vendors, with the same promise: certify once, never rewrite. The platform stopped changing as a result.
+Java EE was specifications, not code. Sun, in its eagerness to have Java accepted, also wrote a reference implementation of Java EE. It was decent and definitely not stellar, and the one piece of it that was small enough to be used on its own, the servlet container, stuck around like an unpaid bill. You now know it as Tomcat. The contract and the implementation together allowed Sun to claim the contract could be met. Sun went on to write a compatibility test kit, which you could run against your own implementation, and licensed the "J2EE compatible" brand to vendors: IBM WebSphere, BEA WebLogic, Oracle, later JBoss. Sun made money from the brand and from the Solaris and SPARC hardware underneath, not from the software. The buyers were banks and telcos, the same buyers COBOL had, through the same vendors, with the same promise as COBOL: certify once, never rewrite.
 
 In 2017 Oracle, which had bought Sun in 2010, handed Java EE to the Eclipse Foundation but kept the trademarks on "Java" and on the `javax` package prefix. Eclipse renamed the platform **Jakarta EE**. Jakarta EE 8 is Java EE 8 verbatim. Jakarta EE 9 renamed every package from `javax.*` to `jakarta.*` with no behavioural change. Jakarta EE 10 is where new features resumed. Every application and every server had to pick a side of that rename.
 
