@@ -119,19 +119,121 @@ app.war
 
 The server refuses to serve anything under `WEB-INF/` or `META-INF/` as a file: a request for `/WEB-INF/web.xml` or `/META-INF/MANIFEST.MF` gets a 404 by specification, so configuration and code cannot be downloaded by clients even though they sit inside the same archive as the static files. Everything else in the archive is fetchable: `curl http://host/app/js/app.js` returns the file. A client cannot execute a class by asking for it. Classes never map to URLs. `web.xml` (or annotations in the classes, more on those below) declares servlets by name and assigns each one URL patterns. For example, `/api/*` to `ApiServlet` and `/login` to `LoginServlet`. When a request arrives, the server matches its path against those patterns and calls the one servlet that matches; a path that matches nothing gets a 404. A class under `WEB-INF/classes/` that no mapping names is unreachable from outside. This is the opposite of CGI or PHP, where a file on disk under the document root is executable because it is there. `unzip -l app.war` shows you what you were given, and `unzip -p app.war WEB-INF/web.xml` shows what it expects of the server. Since Servlet 3.0 (2009) `web.xml` may be nearly empty, because everything it declares can be declared in the source code, as **annotations**. An annotation is a marker prefixed with `@` written directly above a class in the Java source. The compiler keeps it inside the `.class` file, and the server reads it at startup. So `@WebServlet("/api/*")` above the class `ApiServlet` does the job of both a servlet entry and a servlet-mapping entry in `web.xml`: it names the servlet, ties it to that class and assigns it the URL pattern, in one line next to the code it describes. `@WebFilter` and `@WebListener` do the same for filters and listeners. Developers prefer this because the declaration lives with the class it applies to instead of in a separate file that drifts out of date.
 
-To find the annotations, the server scans every class under `WEB-INF/classes/` and every jar under `WEB-INF/lib/` when the application starts, and combines the annotations it finds with the declarations in `web.xml`. The result is a union, not a concatenation: each servlet, filter and listener is one entry keyed by its name, and when `web.xml` and an annotation both declare the same one, `web.xml` wins. Order does not matter for servlets, since URL matching is by pattern rather than by declaration order; it does matter for filters, which run in the order `web.xml` lists them, with annotated filters appended after. A `web.xml` that sets `metadata-complete="true"` tells the server to skip the scan entirely and trust the file alone. Two consequences for you: an empty descriptor does not mean an empty application, so `web.xml` alone no longer tells you the routes; and the scan is part of why a Java application takes seconds to start.
+To find the annotations, the server scans every class under `WEB-INF/classes/` and every jar under `WEB-INF/lib/` when the application starts, and combines the annotations it finds with the declarations in `web.xml`. The result is a union, not a concatenation: each servlet, filter and listener is one entry keyed by its name, and when `web.xml` and an annotation both declare the same one, `web.xml` wins. Order does not matter for servlets, since URL matching is by pattern rather than by declaration order; it does matter for filters, which run in the order `web.xml` lists them, and any filters declared only by annotation run after all of those, in an order the specification leaves undefined. A `web.xml` that sets `metadata-complete="true"` tells the server to skip the scan entirely and trust the file alone. Two consequences for you: an empty descriptor does not mean an empty application, so `web.xml` alone no longer tells you which URL patterns the application answers to and which class handles each (its "routes", in the vocabulary of most other web frameworks); the scan is part of why a Java application takes seconds to minutes to start, depending on the application.
 
 ## Tomcat
 
 Tomcat exists because Sun needed a reference implementation for the Servlet and JSP specifications. James Duncan Davidson wrote it at Sun in the late 1990s, and Sun donated it to Apache in 1999, where it became Jakarta Tomcat 3.0 implementing Servlet 2.2 and JSP 1.1. A reference implementation is the executable definition of a specification. Performance and operability were not goals, and Tomcat was never redesigned as a product afterwards. Every complaint a sysadmin has about it follows from that.
 
-Configuration is split across `server.xml`, `context.xml`, `web.xml`, `catalina.properties`, `logging.properties` and `setenv.sh`, with the same setting sometimes valid in three of them and the precedence undocumented. `server.xml` is literally Tomcat's internal object tree serialised to XML: Server contains Service contains Engine contains Host contains Context, with Connectors and Valves hung off the nodes. You are not saying "listen on 8080 with TLS"; you are instantiating Java classes by name and setting their properties by attribute.
+### What the tarball contains
 
-The distribution and the instance are one tree. The tarball puts `conf/`, `webapps/`, `logs/` and `work/` inside the program directory, so an upgrade means unpacking a new tarball and diffing your edits back in. `CATALINA_HOME` versus `CATALINA_BASE` exists to separate them, but the packages, the documentation and every tutorial ignore it. Debian and Red Hat each fight the layout differently with symlinks, so where a file lives depends on who packaged it.
+Unpack `apache-tomcat-9.0.x.tar.gz` and you get one tree:
 
-Deployment is convention rather than declaration. Drop a WAR in `webapps/`, the autodeployer explodes it, the context path comes from the filename, `ROOT.war` is a magic name. Undeploying means deleting the directory and hoping, because the JVM keeps class loaders and file handles on what it exploded, and anything the application started itself (threads, JDBC drivers, timers) survives as a leak. Tomcat ships a memory-leak-protection listener, which is an admission. The working practice everyone converged on is one WAR per Tomcat and a JVM restart to deploy, which makes the autodeployer and the manager application dead weight you carry anyway.
+```
+apache-tomcat-9.0.x/
+├── bin/
+│   ├── catalina.sh             the real start script; startup.sh and shutdown.sh call it
+│   ├── startup.sh
+│   ├── shutdown.sh
+│   └── setenv.sh               does not exist until you create it; where JVM flags go
+├── conf/
+│   ├── server.xml              the server configuration: ports, TLS, thread pools, virtual hosts
+│   ├── context.xml             default per-application settings (sessions, resources), applied to every deployed application
+│   ├── web.xml                 server-wide defaults that every application's own web.xml can override
+│   ├── catalina.properties     read once at JVM startup: where Tomcat looks for its own jars, and switches such as which jars to skip when scanning
+│   ├── logging.properties      what gets logged where
+│   ├── tomcat-users.xml        usernames, passwords and roles for the manager application (more on that below)
+│   └── Catalina/localhost/     one optional <app>.xml per deployed application: settings for that application only (database pool, context path, session store) kept outside the WAR so a redeploy does not overwrite them
+├── lib/                        Tomcat's own jars, and the place people wrongly drop JDBC drivers
+├── logs/                       catalina.out and the per-day access and application logs
+├── temp/                       java.io.tmpdir for the JVM; private so that the application's scratch files are not in a world-writable /tmp and are removed with the instance
+├── webapps/                    drop a WAR here and it deploys; it is unpacked into a directory of the same name next to it
+│   ├── ROOT/                   what answers at /
+│   ├── manager/                the web management application, enabled by default
+│   ├── host-manager/           same idea for virtual hosts: add and remove Host entries at runtime, enabled by default
+│   ├── docs/                   the Tomcat documentation as a web application
+│   └── examples/               sample servlets and JSPs; delete it, it has had its own CVEs
+└── work/                       per-application scratch: JSPs compiled to servlets, and sessions saved across a restart. Clearing it (Tomcat stopped) is the standard fix when a JSP change is not showing or a saved session file from an old build refuses to load
+```
 
-Tomcat is not heavy because of the engine. It is heavy because it starts from everything: manager, host-manager, docs and examples applications, a JSP compiler, an autodeployer polling `webapps/`, JMX registered for every component, a default pool of 200 threads. Strip it to one connector and one WAR and it is small. The difference from Jetty is direction: Tomcat starts from everything and you remove; Jetty starts from nothing and you add.
+Program, configuration, applications, logs and scratch space are all children of one directory. That is the root of the operational trouble: an upgrade means unpacking the new tarball next to the old one and copying `conf/`, `webapps/` and `setenv.sh` across by hand, then diffing `server.xml` against the new default to see what changed.
+
+Tomcat does have the same split Jetty has, under the names `CATALINA_HOME` (the program) and `CATALINA_BASE` (the instance). Set both, give the base its own `conf/`, `webapps/`, `logs/`, `temp/` and `work/`, and the program directory stays clean. Almost nobody does this by hand because the documentation mentions it in passing and every tutorial assumes the one-tree layout. The distro packages do it for you and each does it differently: on Debian the program is `/usr/share/tomcat9`, the instance is `/var/lib/tomcat9`, and `conf/` is a symlink to `/etc/tomcat9`; on EL the paths are `/usr/share/tomcat` and `/var/lib/tomcat` with `/etc/tomcat`. So the first question on any Tomcat box is "tarball or package", because it decides where every file is.
+
+### server.xml
+
+This is the file you will spend your time in. A stripped-down but real one:
+
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<Server port="8005" shutdown="SHUTDOWN">
+  <Service name="Catalina">
+    <Connector port="8080" protocol="HTTP/1.1"
+               connectionTimeout="20000"
+               maxThreads="200" />
+    <Engine name="Catalina" defaultHost="localhost">
+      <Host name="localhost" appBase="webapps"
+            unpackWARs="true" autoDeploy="true">
+        <Valve className="org.apache.catalina.valves.AccessLogValve"
+               directory="logs" prefix="localhost_access_log" suffix=".txt"
+               pattern="%h %l %u %t &quot;%r&quot; %s %b" />
+      </Host>
+    </Engine>
+  </Service>
+</Server>
+```
+
+Read it as a tree of Java objects, because that is what it is. `Server` is the process; its `port="8005"` is a socket on localhost that stops the server when it receives the string `SHUTDOWN`. `Service` groups one engine with its connectors. `Connector` is a listening socket: port, protocol, thread pool size. `Engine` is the request router; `defaultHost` says which host answers when the request's `Host:` header matches nothing. `Host` is a virtual host, and `appBase="webapps"` is why dropping a WAR there works. `Valve` is a filter that runs on every request through that host, here an access log; `className` is the Java class to instantiate, and every attribute becomes a setter call on it.
+
+That last point is the whole design in one sentence. To change access log format you edit a `pattern` attribute on a `Valve` element, because `AccessLogValve` has a `setPattern` method. To add TLS you add a second `Connector` with `SSLEnabled="true"` and a nested `SSLHostConfig` element, because that is the object graph. The Tomcat documentation for `server.xml` is therefore a list of classes and their attributes, not a list of things you might want to do.
+
+### The other configuration files
+
+`conf/web.xml` is a default deployment descriptor that every application's own `web.xml` is layered on top of. It is where the default servlet (the one that serves static files) and the JSP servlet are declared, and where the global session timeout of 30 minutes lives. If an application does not set its own timeout, this is where it comes from.
+
+`conf/context.xml` holds settings applied to every deployed application: session persistence, resource definitions such as JNDI database pools, cookie settings. A per-application override goes in `conf/Catalina/localhost/<app>.xml` or inside the WAR at `META-INF/context.xml`, and the precedence between those three is where people lose afternoons. The path is the object tree again: `Catalina` is the `Engine` name from `server.xml`, `localhost` is the `Host` name, and there is one file per context under it. It says `localhost` rather than your FQDN because Tomcat's `Host` is a virtual host keyed by the HTTP `Host:` header, and Apache named the default one `localhost` so the tarball works on any machine unedited. Add `<Host name="app.example.org">` to `server.xml` and the matching directory becomes `conf/Catalina/app.example.org/`.
+
+`conf/catalina.properties` sets the class loader search paths and a handful of global switches. You touch it once, to turn off jar scanning for jars you know contain no annotations, because that scan is most of Tomcat's startup time.
+
+`bin/setenv.sh` is where heap size, garbage collector and system properties belong, as `CATALINA_OPTS="-Xmx2g -Duser.timezone=UTC"`. The file does not exist in the tarball and `catalina.sh` sources it only if present, so on a fresh install the JVM runs with default settings and nobody notices until it is slow. The distro packages replace this with `/etc/default/tomcat9` or `/etc/sysconfig/tomcat`, so again the location depends on who packaged it.
+
+### Deployment
+
+Drop `app.war` into `webapps/`. The host's autodeployer polls the directory every few seconds, sees the file, unpacks it into `webapps/app/`, reads `WEB-INF/web.xml`, scans for annotations and starts the application at `/app`. The context path is the filename; `ROOT.war` is the magic name for `/`. There is no command that says "deploy this" and no exit status that says "deploy failed"; the only signal is a stack trace in `catalina.out` and a 404 where the application should be.
+
+Undeploying means deleting `webapps/app.war` and `webapps/app/`. The autodeployer notices and stops the application, but the JVM keeps every class it loaded, every file handle it opened and every thread the application started. Threads, JDBC drivers registered with the runtime, timers and thread-local variables survive as a leak the class loader cannot collect. Deploy the same WAR again and it runs alongside the ghost of the previous one. Tomcat ships a `JreMemoryLeakPreventionListener` to mitigate the known cases, which is an admission. The practice everyone converged on is one WAR per Tomcat, restart the JVM to deploy, which makes the autodeployer and the manager application dead weight you carry anyway.
+
+### The manager application
+
+`webapps/manager/` is a web application that ships with Tomcat and manages Tomcat: a page listing every deployed application with Start, Stop, Reload and Undeploy buttons, an upload form to deploy a WAR from the browser, and a status page showing thread pools and memory. `webapps/host-manager/` does the same for virtual hosts. Both are enabled in the tarball, both are gated only by `conf/tomcat-users.xml`, which ships with every user commented out, and both are reachable on the same port as your application. For a decade "Tomcat manager with default credentials" was a standard entry in penetration test reports, because the moment someone uncommented a user to try it out, `/manager/html` became a remote WAR upload for anyone who guessed the password. The manager also has a text interface at `/manager/text` that build tools and deployment plugins use to push WARs, which is the only reason it survives. If nothing pushes to it, delete `webapps/manager/` and `webapps/host-manager/` on day one; the distro packages ship them as separate optional packages for this reason.
+
+### Logs
+
+`logs/catalina.out` is stdout and stderr of the JVM, appended forever, never rotated by Tomcat itself. Startup messages, stack traces from failed deployments and anything the application prints all land here. `logs/catalina.<date>.log` and `logs/localhost.<date>.log` are Tomcat's own logging, rotated daily by `logging.properties`. `logs/localhost_access_log.<date>.txt` is the access log from the valve above. The distro packages send `catalina.out` to journald or `/var/log/tomcat9/`. When something is wrong, `catalina.out` is where the answer is, and on a busy server it is gigabytes.
+
+### Why it is heavy
+
+Tomcat is not heavy because of the engine. It is heavy because it starts from everything: manager, host-manager, docs and examples applications, a JSP compiler, an autodeployer polling `webapps/`, JMX registered for every component, a default pool of 200 threads. Strip it to one connector and one WAR, delete everything in `webapps/` but your application, and it is 15 MB of jars starting in under a second. The difference from Jetty is direction: Tomcat starts from everything and you remove; Jetty starts from nothing and you add.
+
+### Tomcat 8, 9, 10, 10.1, 11: which one and why
+
+Each Tomcat major version implements exactly one Servlet specification version, and that is the whole difference between them. The engine, the configuration files and the layout barely change; what changes is which API the WAR must have been compiled against.
+
+| Tomcat | Servlet | Package prefix | Platform | Minimum JDK | Status |
+|---|---|---|---|---|---|
+| 8.5 | 3.1 | `javax` | Java EE 7 | 7 | End of life March 2024 |
+| 9.0 | 4.0 | `javax` | Java EE 8 | 8 | Maintained; the last `javax` Tomcat |
+| 10.0 | 5.0 | `jakarta` | Jakarta EE 9 | 8 | End of life October 2022 |
+| 10.1 | 6.0 | `jakarta` | Jakarta EE 10 | 11 | Maintained |
+| 11.0 | 6.1 | `jakarta` | Jakarta EE 11 | 17 | Maintained |
+
+The line that matters is between 9 and 10: 9 is `javax`, everything from 10 on is `jakarta`. A WAR compiled against `javax.servlet` deploys on Tomcat 9 and fails on Tomcat 10 with `ClassNotFoundException: javax.servlet.http.HttpServlet`, because that class no longer exists in the server. A WAR compiled against `jakarta.servlet` fails the same way on 9. Nothing else about the WAR needs to change; the rename is the entire incompatibility. Tomcat 10 ships a migration tool that rewrites the package names inside an old WAR's class files at deploy time, which works for simple applications and not for the ones that matter.
+
+So the rule is: look at the WAR, not the calendar. `unzip -l app.war` and check whether `WEB-INF/lib/` contains jars named `javax.servlet-api` or `jakarta.servlet-api`, or ask the developer which Spring Boot generation it is: Spring Boot 2 is `javax` and needs Tomcat 9, Spring Boot 3 is `jakarta` and needs 10.1 or 11. Tomcat 9 is not old for being the lower number; it is the current server for the entire `javax` world, receives the same security fixes as 11, and will for years, because that world is larger than the `jakarta` one.
+
+10.0 existed for eighteen months as the rename release with no new features and is dead; treat any mention of it as 10.1. 8.5 is end of life and a `javax` application on it moves to 9 with no changes.
+
+This is the situation Jetty 12 was designed to escape: one Jetty serves both `javax` and `jakarta` WARs from one installation, with `ee8` and `ee10` as modules instead of as separate products.
 
 ## Jetty
 
@@ -141,32 +243,164 @@ Jetty 9, 10 and 11 each targeted one Servlet version, like Tomcat still does. Je
 
 ### Home and base
 
-`$JETTY_HOME` is the unpacked distribution. Read-only, never edited, replaced whole at upgrade. Think `/usr/lib/jetty`.
+`$JETTY_HOME` is the unpacked distribution. Read-only, never edited, replaced whole at upgrade. Think `/usr/lib/jetty`. Unpack `jetty-home-12.0.x.tar.gz` and you get:
 
-`$JETTY_BASE` is a directory per server instance holding only what differs from home: which modules are enabled, their property values, any XML overrides and the WARs. Think `/etc/jetty/<instance>`.
+```
+jetty-home-12.0.x/
+├── start.jar                   the launcher; the only thing you ever run
+├── lib/                        every jar Jetty could load, organised by module
+│   ├── jetty-server-12.0.x.jar
+│   ├── jetty-ee8-servlet-12.0.x.jar
+│   └── ...
+├── modules/                    one .mod file per feature
+│   ├── http.mod
+│   ├── https.mod
+│   ├── ssl.mod
+│   ├── ee8-deploy.mod
+│   ├── requestlog.mod
+│   └── ...
+├── etc/                        XML fragments the modules reference
+│   ├── jetty.xml
+│   ├── jetty-http.xml
+│   └── ...
+└── bin/
+    └── jetty.sh                init-style start script, optional
+```
 
-You start the program and tell it which config directory to use: `java -jar $JETTY_HOME/start.jar` run from inside the base. One home can back several bases. Upgrading Jetty is unpacking a new home and pointing the base at it; nothing in the base changes. A diff of your base is exactly your configuration. Jetty 12 ships a home with no `webapps/` in it, so running from the distribution directory no longer works even by accident.
+Note what is missing: no `webapps/`, no `logs/`, no `start.ini`. The distribution cannot run on its own, on purpose. Everything that varies per server lives in a base.
+
+`$JETTY_BASE` is a directory per server instance holding only what differs from home. Think `/etc/jetty/<instance>`. You create it empty and ask `start.jar` to populate it:
+
+```
+mkdir -p /opt/jetty/base/app
+cd /opt/jetty/base/app
+java -jar /opt/jetty/12.0.x/start.jar --add-modules=http,ee8-deploy
+```
+
+`start.jar` reads `modules/http.mod` and `modules/ee8-deploy.mod` from home, follows their dependencies (`server`, `ee8-webapp`, `ee8-security`, `deploy` and so on) and writes the result into the base:
+
+```
+/opt/jetty/base/app/
+├── start.d/
+│   ├── http.ini
+│   └── ee8-deploy.ini
+├── webapps/
+└── resources/
+```
+
+Nothing was copied from home. The base contains two small ini files and an empty `webapps/` directory. Start the server from inside the base:
+
+```
+cd /opt/jetty/base/app
+java -jar /opt/jetty/12.0.x/start.jar
+```
+
+`start.jar` takes the base from the working directory, or from `-Djetty.base=/opt/jetty/base/app` if you run it from elsewhere. One home can back any number of bases, each on its own port with its own modules. Upgrading Jetty means unpacking a new home, changing one path in whatever starts the server, and starting it; the base is untouched. A diff of the base against an empty directory is exactly your configuration.
 
 ### Modules and start.d
 
-A **module** is a file `$JETTY_HOME/modules/<name>.mod` that declares jars, XML, properties and dependencies. `http`, `https`, `ssl`, `ee8-deploy`, `gzip`, `requestlog` are modules. Enabling one writes `$JETTY_BASE/start.d/<name>.ini` containing the module name and its properties, commented out with defaults shown. You edit the ini to set the port. At startup `start.jar` resolves the module graph, builds the classpath and the XML list, and can print the result with `--list-config`. There is one place per concern and a command that shows the effective configuration. That is the whole answer to the Tomcat configuration problem.
+A **module** is a file `$JETTY_HOME/modules/<name>.mod` that declares, in named sections, which jars go on the classpath, which XML files to load, which properties exist with what defaults, and which other modules it depends on. `http.mod`, shortened:
 
-JVM flags belong in the same ini files, as `--exec` lines, so heap and GC settings live next to the module they serve rather than in a shell script that does not exist until you create it.
+```
+[description]
+Enables a clear-text HTTP connector.
+
+[tags]
+connector
+http
+
+[depend]
+server
+
+[xml]
+etc/jetty-http.xml
+
+[ini-template]
+## Connector host/address to bind to
+# jetty.http.host=0.0.0.0
+
+## Connector port to listen on
+# jetty.http.port=8080
+
+## Connector idle timeout in milliseconds
+# jetty.http.idleTimeout=30000
+```
+
+Enabling the module copies the `[ini-template]` section into `$JETTY_BASE/start.d/http.ini` with one line added at the top:
+
+```
+--module=http
+# jetty.http.host=0.0.0.0
+# jetty.http.port=8080
+# jetty.http.idleTimeout=30000
+```
+
+To change the port, uncomment the line and edit it. That is the entire configuration model: one ini file per concern, containing only the properties that concern has, with the defaults visible as comments. There is no XML for you to edit; `etc/jetty-http.xml` in home reads `jetty.http.port` and you never open it.
+
+JVM flags go in the same files, as lines starting with `--exec` and `-X`. A `start.d/jvm.ini` containing:
+
+```
+--exec
+-Xmx2g
+-Duser.timezone=UTC
+```
+
+makes `start.jar` fork a second JVM with those flags and run the server in it. Heap size sits in the base next to the port, not in a shell script somewhere else.
+
+Two commands tell you what a base will do before you start it:
+
+```
+java -jar /opt/jetty/12.0.x/start.jar --list-modules=enabled
+java -jar /opt/jetty/12.0.x/start.jar --list-config
+```
+
+The first lists the enabled modules and, for each, which ini file enabled it and what it depends on. The second prints the resolved result: every property with its final value and where it came from, the full classpath in order, and every XML file that will be loaded in order. If a value is not what you expect, this output says which file set it. Tomcat has no equivalent; the effective configuration of a running Tomcat exists only inside the JVM.
 
 ### Deployment
 
-Enabling `ee8-deploy` adds the ee8 servlet jars in their own class loader and a deployer that scans `$JETTY_BASE/webapps/` for WARs. The WAR is unpacked into `$JETTY_BASE/work/` if that directory exists, otherwise into a temp directory. Neither path is anything the application knows about; the application's own configuration and data live wherever the application says, and Jetty does not read them.
+The `ee8-deploy` module (or `ee9-deploy`, `ee10-deploy`) does two things. It puts the servlet API jars for that environment on a class loader of their own, and it starts a scanner on `$JETTY_BASE/webapps/`. Drop `app.war` there and the scanner deploys it at `/app`; `ROOT.war` deploys at `/`. Same convention as Tomcat, with one addition: when several environments are enabled in one base, a WAR needs a sidecar telling the scanner which environment it belongs to, `app.properties` next to `app.war` containing `environment=ee8`. With one environment enabled, it is the default and the sidecar is unnecessary.
+
+The WAR is unpacked into `$JETTY_BASE/work/` if that directory exists, otherwise into a temporary directory that is deleted on exit. Create `work/` (the `work` module does it) if you want the unpacked tree to survive restarts and be inspectable. Neither path is anything the application knows about; the application's own configuration and data live wherever the application says, and Jetty does not read them.
+
+A failed deployment looks like this on the console: a `WARN` line naming the WAR and the exception, then the stack trace, then `Started Server` anyway with the rest of the server up and the failed context returning 503. Jetty does not refuse to start because one WAR is broken. `start.jar` exits non-zero only if the server itself cannot start, a port in use for instance.
+
+### Logs
+
+By default Jetty logs to stderr, which under systemd is the journal. The `requestlog` module adds an NCSA-format access log under `$JETTY_BASE/logs/`, rotated daily; the `logging-logback` and `logging-log4j2` modules route the server's own log through those frameworks if you want files and levels. Nothing is appended forever by default, because there is no `catalina.out`.
+
+### Running it as a service
+
+A base is a working directory and a command line, so the systemd unit is short:
+
+```
+[Unit]
+Description=Jetty app
+After=network.target
+
+[Service]
+User=jetty
+WorkingDirectory=/opt/jetty/base/app
+ExecStart=/usr/bin/java -jar /opt/jetty/12.0.x/start.jar
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target
+```
+
+One unit per base; two bases on one machine are two units with two working directories and two ports, sharing one home. The `jetty.sh` script in `bin/` is for systems without systemd and you do not need it.
 
 ## The four directories
 
 For any Java web application on Jetty there are four places, and confusion comes from collapsing them:
 
-1. The Jetty program: `$JETTY_HOME`. Never edited.
-2. The Jetty instance config: `$JETTY_BASE`. Port, environment, modules, the WAR.
-3. The application's own config: wherever the application reads it from, typically `/etc/<app>/`. Database, data paths, external services. Jetty does not read this; the application does.
-4. The application's data: typically a `/data` disk.
+1. The Jetty program: `$JETTY_HOME`, here `/opt/jetty/12.0.x`. Never edited. Replaced whole at upgrade.
+2. The Jetty instance config: `$JETTY_BASE`, here `/opt/jetty/base/app`. Port, environment, modules, JVM flags, the WAR. The only thing you edit.
+3. The application's own config: wherever the application reads it from, typically `/etc/<app>/`. Database connection, data paths, external services. Jetty does not read this; the application does, after Jetty has started it.
+4. The application's data: typically a `/data` disk. Jetty never touches it.
 
 Jetty starts, reads 2, loads the WAR from 2, the WAR starts, reads 3, works on 4.
+
+On Tomcat the same four exist, but 1 and 2 are usually one tree, which is why people cannot tell which of their edits are configuration and which are the program.
 
 ## Translation table
 
