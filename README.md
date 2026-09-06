@@ -2,6 +2,16 @@
 
 You have been handed a WAR file and told to run it. Nobody told you what a WAR is, why the server that runs it has two home directories, or why the documentation reads like it was written for someone else. It was. This is the translation.
 
+## The model in five lines
+
+1. `java` is one process, the JVM. Tomcat, Jetty and your application are all classes loaded inside it. Its memory ceiling is `-Xmx`, and you set it.
+2. The application arrives as a WAR: a zip with `WEB-INF/web.xml` describing which URL goes to which class. Everything under `WEB-INF/` and `META-INF/` is hidden from clients; everything else is a URL.
+3. Tomcat and Jetty are the programs that load the WAR and serve it. Each implements a version of the Servlet API; the WAR must have been built against the same one, and the `javax` to `jakarta` rename in 2020 is the line that matters.
+4. There are four directories: the server program, the server instance config, the application's own config, the application's data. Confusion comes from collapsing them. Tomcat's tarball collapses the first two; Jetty refuses to.
+5. One application per JVM, restart to deploy, delete what you do not run.
+
+The rest of this document is why each of those is true.
+
 ## Why this document exists
 
 Java has its own vocabulary for things you already know, and the words point at the wrong Linux concepts. "Home" is not `$HOME`. "Container" is not Docker. "Module" is not a kernel module. "Context" is not a kubectl context. Once each word is translated once, the model underneath is ordinary: a program, a config directory, a plugin list and an application. The people who know this never had to explain it to an outsider, so nobody wrote it down.
@@ -207,13 +217,25 @@ About `lib/` and JDBC drivers: the driver belongs inside the WAR, in `WEB-INF/li
 
 `conf/catalina.properties` sets the class loader search paths and a handful of global switches. You touch it once, to turn off jar scanning for jars you know contain no annotations, because that scan is most of Tomcat's startup time.
 
-`bin/setenv.sh` is where heap size, garbage collector and system properties belong, as `CATALINA_OPTS="-Xmx2g -Duser.timezone=UTC"`. The file does not exist in the tarball and `catalina.sh` sources it only if present, so on a fresh install the JVM runs with default settings and nobody notices until it is slow. The distro packages replace this with `/etc/default/tomcat9` or `/etc/sysconfig/tomcat`, so again the location depends on who packaged it.
+`bin/setenv.sh` is where the heap size, the garbage collector choice and the system properties belong, as `CATALINA_OPTS="-Xmx2g -Duser.timezone=UTC"`. The file does not exist in the tarball and `catalina.sh` sources it only if present, so on a fresh install the JVM runs with default settings and nobody notices until it is slow. The distro packages replace this with `/etc/default/tomcat9` or `/etc/sysconfig/tomcat`, so again the location depends on who packaged it.
 
 ### Deployment
 
 Drop `app.war` into `webapps/`. The host's autodeployer polls the directory every few seconds, sees the file, unpacks it into `webapps/app/`, reads `WEB-INF/web.xml`, scans for annotations and starts the application at `/app`. The context path is the filename; `ROOT.war` is the magic name for `/`. There is no command that says "deploy this" and no exit status that says "deploy failed"; the only signal is a stack trace in `catalina.out` and a 404 where the application should be.
 
-Undeploying means deleting `webapps/app.war` and `webapps/app/`. The autodeployer notices and stops the application, but the JVM keeps every class it loaded, every file handle it opened and every thread the application started. Threads, JDBC drivers registered with the runtime, timers and thread-local variables survive as a leak the class loader cannot collect. Deploy the same WAR again and it runs alongside the ghost of the previous one. Tomcat ships a `JreMemoryLeakPreventionListener` to mitigate the known cases, which is an admission. The practice everyone converged on is one WAR per Tomcat, restart the JVM to deploy, which makes the autodeployer and the manager application dead weight you carry anyway.
+Undeploying means deleting `webapps/app.war` and `webapps/app/`. The autodeployer notices and stops the application, but the JVM keeps every class it loaded, every file handle it opened and every thread the application started. Threads, JDBC drivers registered with the runtime, timers and thread-local variables survive, and each of them still references the application's classes, so the garbage collector correctly refuses to reclaim the class loader and everything it loaded. Nothing in Java can force-unload classes that are still reachable. Deploy the same WAR again and it runs alongside the ghost of the previous one. Tomcat ships a Java class, `JreMemoryLeakPreventionListener`, enabled by a `<Listener className="org.apache.catalina.core.JreMemoryLeakPreventionListener" />` line near the top of the default `server.xml`, that breaks the known references from the outside, stopping threads, deregistering JDBC drivers, clearing thread-locals, so the loader becomes unreachable and the next collection takes it; that such a component exists is Tomcat admitting that undeploy does not work on its own. The practice everyone converged on is one WAR per Tomcat, restart the JVM to deploy, which makes the autodeployer and the manager application dead weight you carry anyway.
+
+### Undeploying by hand
+
+Given all of the above, the reliable undeploy is a restart with the files gone:
+
+1. `systemctl stop tomcat` (or whatever runs it). Confirm with `ps` that the JVM is gone; a stuck shutdown leaves it running and the next steps delete files out from under it.
+2. Remove `webapps/app.war` and `webapps/app/`. Both, or the autodeployer recreates one from the other at the next start.
+3. Remove `conf/Catalina/localhost/app.xml` if it exists, or its settings apply to the next thing deployed under that name.
+4. Remove `work/Catalina/localhost/app/`, the compiled JSPs and saved sessions, or the next deploy of a changed WAR may load stale ones.
+5. Start Tomcat and check that `catalina.out` no longer mentions `app` during startup; the deploy lines name each application as it comes up.
+
+Before step 2, look inside `webapps/app/` and compare it with `unzip -l app.war`. Some applications write into their own unpacked directory at runtime: uploaded files, generated reports, downloaded tools, plugins, even jars dropped into `WEB-INF/lib/` by an in-application installer. A bioinformatics platform the author runs does this, and after a year `webapps/app/` is several gigabytes of which the WAR accounts for a hundred megabytes. Deleting the directory deletes that data, and redeploying a new WAR over it does something worse: the autodeployer removes the old directory first, then unpacks the new WAR, so the data is gone either way and nobody warned you. If the diff shows files that are not in the WAR, move them out to a path under `/data` before undeploying, and then find the application's configuration option that points it there permanently, because an application that writes into its own install directory has a bug you have just made yours. The same applies to Jetty's `work/` and to any exploded directory: the WAR is the only thing that should be in it.
 
 ### The manager application
 
@@ -498,3 +520,55 @@ Each of these follows from something explained above; none is a matter of taste.
 ## Where to read next
 
 The Jetty 12 Operations Guide at jetty.org is the only current book on running Jetty; there is no printed one. The Eclipse Foundation article "Jakarta EE 8: Past, Present, and Future" covers the platform history from 1996. The Register's March 2018 article on the Jakarta rename covers the trademark dispute. Nothing covers Tomcat from the operator's side; this document is the closest thing.
+
+## Appendix: a Tomcat systemd unit that calls java directly
+
+`catalina.sh` is 500 lines of shell whose job is to compute a `java` command line. Under systemd it adds nothing: the unit can compute the same line once, in the open, and systemd handles the process lifetime. This is offered as a courtesy; every path, the user, the memory and the JDK flags must be adjusted to your install, and the unit assumes a tarball layout with `CATALINA_HOME` and `CATALINA_BASE` separated as described above.
+
+First, turn `setenv.sh` into a file systemd can read. `EnvironmentFile=` takes `KEY=VALUE` lines only: no `export`, no shell expansion, no quoting rules beyond plain double quotes, and any line that is commented out in `setenv.sh` must not be carried across, because a `# CATALINA_OPTS=...` that someone uncomments in the shell script will do nothing here. Produce it once and keep it under version control:
+
+```
+grep -v -E '^[[:space:]]*#' /opt/tomcat/instances/app/bin/setenv.sh | grep -E '^[[:space:]]*(export[[:space:]]+)?[A-Z_]+=' | sed -E 's/^[[:space:]]*export[[:space:]]+//' > /etc/tomcat/app.env
+```
+
+Then read the result and check it by eye. A typical one:
+
+```
+JAVA_HOME=/usr/lib/jvm/jre-17-openjdk
+CATALINA_HOME=/opt/tomcat/9.0.x
+CATALINA_BASE=/opt/tomcat/instances/app
+CATALINA_OPTS=-Xms1g -Xmx2g -XX:+UseG1GC -Duser.timezone=UTC
+JAVA_OPTS=-Djava.awt.headless=true
+```
+
+The unit:
+
+```
+[Unit]
+Description=Tomcat instance app
+After=network.target
+
+[Service]
+Type=simple
+User=tomcat
+Group=tomcat
+EnvironmentFile=/etc/tomcat/app.env
+WorkingDirectory=/opt/tomcat/instances/app
+ExecStart=/usr/bin/java $JAVA_OPTS $CATALINA_OPTS -Dcatalina.home=${CATALINA_HOME} -Dcatalina.base=${CATALINA_BASE} -Djava.io.tmpdir=${CATALINA_BASE}/temp -Djava.util.logging.manager=org.apache.juli.ClassLoaderLogManager -Djava.util.logging.config.file=${CATALINA_BASE}/conf/logging.properties -classpath ${CATALINA_HOME}/bin/bootstrap.jar:${CATALINA_HOME}/bin/tomcat-juli.jar org.apache.catalina.startup.Bootstrap start
+SuccessExitStatus=143
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
+```
+
+What each part is for. `$JAVA_OPTS` and `$CATALINA_OPTS` with a plain dollar are split on whitespace by systemd into separate arguments, which is what you want for a list of flags; `${CATALINA_HOME}` with braces is substituted as one argument, which is what you want inside a path. The three `-D` properties for home, base and tmpdir are what `catalina.sh` would have set, and Tomcat reads them to find everything. The two logging properties make Tomcat use its own logging manager and `conf/logging.properties`; without them `java.util.logging` runs with JDK defaults and the per-day log files never appear. The classpath is exactly two jars: `bootstrap.jar` contains the `Bootstrap` class that builds the real class loaders from `catalina.properties`, and `tomcat-juli.jar` is the logging manager, which has to be visible before the class loaders exist. `Bootstrap start` is the argument `catalina.sh start` would have passed.
+
+`SuccessExitStatus=143` is because `systemctl stop` sends SIGTERM, Tomcat shuts down cleanly on it and exits 143 (128 plus signal 15), and without this line systemd records every clean stop as a failure. There is no `ExecStop`: the shutdown port 8005 and its `SHUTDOWN` string are `catalina.sh stop`'s way of doing what SIGTERM does, and with systemd in charge you can set `port="-1"` on the `Server` element and close that socket for good.
+
+Once this runs, `bin/` is dead weight in the instance and `setenv.sh` is a file nobody should touch, which is worth a comment at the top of it pointing at `/etc/tomcat/app.env`.
+
+---
+
+*Note to self: re-read the whole document top to bottom before publishing. The sections were edited out of order and one at a time; check that terms are defined before they are used, that the four-directories model matches what the Tomcat and Jetty sections say, and that the Jetty examples match a real 12.0.x install.*
