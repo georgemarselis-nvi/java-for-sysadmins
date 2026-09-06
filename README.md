@@ -40,26 +40,48 @@ Java source compiles to **bytecode**, an instruction set for a machine that does
 
 Two consequences matter operationally.
 
-Memory is not what `free` tells you. The JVM reserves a **heap** for objects, sized by `-Xms` (initial) and `-Xmx` (maximum), and will happily use all of `-Xmx` before collecting, so a JVM sitting at its maximum heap is not leaking, it is behaving as configured. On top of the heap sit thread stacks, JIT code cache, metaspace for loaded classes and native buffers, so the memory the process actually occupies (the RES column in `top`) is the heap plus a few hundred megabytes. Since JDK 10 the default `-Xmx` is one quarter of the machine's memory. The JVM reads that figure from the cgroup it runs in, not from `/proc/meminfo`. On bare metal or a VM, that is the total RAM of the machine. Inside a Docker container started with `--memory=2g`, that is 2 GB, so the default heap is 512 MB. Before JDK 10 the JVM read `/proc/meminfo` instead. Java 8 behaved the same way until a late 2018 update. On a 64 GB host the JVM saw the full memory and sized its heap to 16 GB (the aforementioned quarter). It did not read the cgroup, so it had no idea a 2 GB limit existed and planned as if it had 16 GB to fill. The kernel enforced the limit regardless: the moment the heap grew past 2 GB the OOM killer shot the process. That is why every old Java-in-Docker guide tells you to set `-Xmx` by hand. On a 16 GB server dedicated to one application that leaves 12 GB unused, so always set `-Xmx` explicitly; a common starting point is half to three quarters of the machine, leaving room for the non-heap parts of the process and the OS page cache.
+Memory is not what `free` tells you. The JVM reserves a **heap** for objects, sized by `-Xms` (initial) and `-Xmx` (maximum), and will happily use all of `-Xmx` before collecting, so a JVM sitting at its maximum heap is not leaking, it is behaving as configured. On top of the heap sit thread stacks, JIT code cache, metaspace for loaded classes and native buffers, so the memory the process actually occupies in RAM (its RSS, resident set size, the RES column in `top`) is the heap plus a few hundred megabytes. Since JDK 10 the default `-Xmx` is one quarter of the machine's memory. The JVM reads that figure from the cgroup it runs in, not from `/proc/meminfo`. On bare metal or a VM, that is the total RAM of the machine. Inside a Docker container started with `--memory=2g`, that is 2 GB, so the default heap is 512 MB. Before JDK 10 the JVM read `/proc/meminfo` instead. Java 8 behaved the same way until a late 2018 update. On a 64 GB host the JVM saw the full memory and sized its heap to 16 GB (the aforementioned quarter). It did not read the cgroup, so it had no idea a 2 GB limit existed and planned as if it had 16 GB to fill. The kernel enforced the limit regardless: the moment the heap grew past 2 GB the OOM killer shot the process. That is why every old Java-in-Docker guide tells you to set `-Xmx` by hand. The one-quarter default is wrong on a server too, in the other direction: on a 16 GB machine dedicated to one application it leaves 12 GB unused. So always set `-Xmx` explicitly. Half to three quarters of the machine is a starting point until you have measured what the application needs; how to measure it is under "Sizing memory for a Java process" below.
 
-Startup is slow and then fast. The interpreter runs first, the JIT kicks in after thousands of invocations, so a JVM is at its slowest in its first minute and at its fastest after an hour. Restarting to deploy throws that away every time, which is one more reason the one-WAR-per-JVM practice hurts.
+Startup is slow and then fast. The interpreter runs first, the JIT kicks in after thousands of invocations, so a JVM is at its slowest in its first minute and at its fastest after an hour. Restarting to deploy (item 5 in the summary above, and the section on Tomcat deployment below) throws that away every time; it is the one real cost of that practice.
+
+Flags go on the `java` command line. `-X` flags are standard across JVMs (`-Xmx`), `-XX:` flags are HotSpot-specific and change between versions (`-XX:+UseG1GC`), `-D` sets system properties the application reads (`-Duser.timezone=UTC`). Where those flags live is a per-server question, and one of the things that separates Tomcat from Jetty below.
 
 Names you will meet:
 
 - **JDK**, Java Development Kit: the compiler plus the runtime. The package you install.
 - **JRE**, Java Runtime Environment: the runtime alone. No longer shipped separately, so you install a JDK even to run things. The `-headless` package variants leave out the desktop libraries (AWT, Swing, fonts, printing), which are still part of the standard runtime because they were never removed, not because servers need them; the full package pulls in X11 and font dependencies for nothing. On a server, headless is the normal package.
-- **OpenJDK**: the open-source codebase. Several organisations build it into binaries: Oracle, Red Hat (the distro packages on EL), Eclipse Temurin (the Eclipse Foundation's neutral build, formerly AdoptOpenJDK), Amazon Corretto (Amazon's build of the same OpenJDK source, made because Amazon runs enormous amounts of Java internally and wanted to control its own patches; it is what you get by default on AWS machine images), Azul Zulu (a company that sells Java support), Microsoft. All pass the same compatibility kit and differ in support terms and patch cadence, not behaviour. The names matter only when you download a tarball; the distro package is Red Hat's or Debian's build and you never see them.
+- **OpenJDK**: the open-source codebase. Several organisations build it into binaries: Oracle, Red Hat (the distro packages on EL), Eclipse Temurin (the Eclipse Foundation's neutral build, formerly AdoptOpenJDK), Amazon Corretto (Amazon's build of the same OpenJDK source, made because Amazon runs enormous amounts of Java internally and wanted to control its own patches; it is what you get by default on AWS machine images), Azul Zulu (a company that sells Java support), Microsoft. All pass the same compatibility kit and differ in support terms and patch cadence, not behaviour. The names matter only when you download a tarball; which one to install is covered below.
 - **Version numbers**, by epoch:
   - Sun, 1996 to 1998: 1.0, 1.1.
   - Sun, "Java 2", 1998 to 2006: 1.2, 1.3, 1.4, 5 (called 1.5 internally), 6. This is where the J2SE and J2EE names come from.
   - Sun then Oracle, 2006 to 2014: 7 (2011, first Oracle release), 8 (2014). Still numbered 1.7 and 1.8 in `java -version` output.
   - Oracle, six-month cadence, 2017 onward: 9, 10, 11, 12 and so on, one every March and September. Every fourth is long-term support: 11 (2018), 17 (2021), 21 (2023), 25 (2025). The rest are dead six months after release.
-  - Java 8 is the exception: it came out in 2014, but it is still supported by Red Hat and Azul and still in production everywhere. It was the last release before the Java 9 compatibility break, so it is the last version an old application runs on without its dependencies being updated first, and enough customers pay for that to keep the security patches coming. The full story is under "Why old applications refuse to run on a new JDK" below.
+  - Java 8 is the exception: it came out in 2014, but it is still supported by Red Hat and Azul and still in production everywhere. It was the last release before the Java 9 compatibility break, so it is the last version an old application runs on without its dependencies being updated first, and enough customers pay for that to keep the security patches coming. The full story is under "Why Java 8 lived ten years" below.
 - **Target version**: applications declare the minimum JDK they compile against. Spring Boot 2 era applications want 11 or 17, Jetty 12 wants 17.
+
+### Sizing memory for a Java process
+
+A C daemon uses what it needs and gives it back; its RSS (resident set size, the RES figure from `top` mentioned above) is a measurement. A JVM uses what you allowed it and keeps it; its resident size is a decision you made, and it is set via `-Xmx`. So you cannot size a machine for a JVM by watching what it uses, the way you would for a C daemon; you have to work out what it needs and then tell it.
+
+Start from what the process actually needs, not from what it uses. `top` will show a JVM at or near its `-Xmx` after an hour whatever the load, because the collector lets garbage accumulate until it has to run; a full heap is normal, not a leak. The number that matters is the live set: how much survives a full collection. Get it from the JVM, not from the OS: `jcmd <pid> GC.run` followed by `jcmd <pid> GC.heap_info` on JDK 17 or later prints heap use after a forced collection, and that figure is the application's real footprint at that moment. Sample it under real load, at the end of a busy day, a few times.
+
+Then set the heap. `-Xmx` at two to three times the live set is the usual rule: below twice, the collector runs constantly and the application spends its time in GC pauses; above three times, the memory sits idle and a full collection, when one finally happens, takes longer for no benefit. Set `-Xms` equal to `-Xmx` on a server, so the heap is reserved at startup and the JVM never pauses to grow it. A JVM whose `-Xmx` is too small does not slow down gracefully; it throws `OutOfMemoryError` on some request, which the application may or may not survive, or it spends 90 percent of its time collecting and answers so slowly that the reverse proxy times out. Both look like an application bug from outside.
+
+Then add the rest of the process, which the heap number does not include:
+
+- Metaspace, where loaded classes live: 50 to 150 MB for a typical application, more for large frameworks. Grows with the number of classes, not with load.
+- Thread stacks: 1 MB per thread by default, so a 200-thread pool is 200 MB of address space (less resident, since stacks are touched lazily).
+- The JIT code cache: up to 240 MB by default, usually 50 to 100 in use.
+- Direct buffers and native memory: what the application allocates outside the heap for I/O. Small unless the application does something unusual.
+- The collector's own bookkeeping, which for G1 is a few percent of the heap.
+
+Rule of thumb: process RSS settles at `-Xmx` plus 300 to 500 MB for an ordinary application, and the machine needs that plus the OS page cache plus whatever else runs. A 2 GB heap on a 4 GB VM is comfortable; a 3 GB heap on a 4 GB VM will be killed by the kernel the first time everything is touched at once, and the kernel's OOM message will name `java` while the real cause was the arithmetic.
+
+Two things that surprise people coming from C. First, the JVM does not return heap memory to the OS in any timely way, so a JVM that once handled a burst stays at that size; if the box shows a JVM at 4 GB RSS it will stay there until restart, and that is by design. Second, `free` is the wrong tool: it cannot tell heap in use from heap reserved, so it shows the JVM as consuming memory it may never have touched. Ask the JVM (`jcmd`, or JMX through any monitoring agent) for the live set, and the OS only for the total.
 
 ### Which JDK to install
 
-The distribution package, `java-17-openjdk-headless` on EL, `openjdk-17-jre-headless` on Debian. It is the same OpenJDK, patched by the distro, updated by `dnf` or `apt` with everything else, and inside the distro's security process. A vendor tarball is for two cases only: a version the distribution does not ship, or a container image with a specific JDK baked in. Pick an LTS version and never a six-month release or an early-access build: vendors support only LTS, ship security updates quarterly for those, and reserve the right to ship nothing for anything else. Do not start anything new on 8; it is 2014 code kept alive on paid support.
+The distribution package: `java-17-openjdk-headless` on EL, `openjdk-17-jre-headless` on Debian. It is the same OpenJDK, patched by the distro, updated by `dnf` or `apt` with everything else, and inside the distro's security process. A vendor tarball is for two cases only: a version the distribution does not ship, or a container image with a specific JDK baked in. Pick an LTS version and never a six-month release or an early-access build: vendors support only LTS, ship security updates quarterly for those, and reserve the right to ship nothing for anything else. Do not start anything new on 8; it is 2014 code kept alive on paid support.
 
 ### Why old applications refuse to run on a new JDK
 
@@ -67,15 +89,17 @@ Java 9 introduced the module system and Java 11 removed the Java EE pieces that 
 
 ### Why Oracle did that
 
-Sun's rule had been never to remove anything, so the runtime grew for twenty years into one monolithic jar, with libraries reaching freely into its internals, and nothing inside it could ever change. Java 9 put a fence around the internals so the JDK could evolve. Java 11 removed the Java EE libraries from the runtime. Those libraries had originally been developed as part of Java EE, and in the 2000s Sun had copied them into the standard runtime for convenience; the copies then fell behind and stopped being maintained while still sitting in the main Java tree. Once Java EE moved to Eclipse and those libraries were being developed again, the JDK dropped its stale copies and applications were told to depend on the current versions like any other library. Java 8 stayed in production for ten years because:
+Sun's rule had been never to remove anything, so the runtime grew for twenty years into one monolithic jar, with libraries reaching freely into its internals, and nothing inside it could ever change. Java 9 put a fence around the internals so the JDK could evolve. As for the Java EE libraries that 11 removed: those had originally been developed as part of Java EE, and in the 2000s Sun had copied them into the standard runtime for convenience; the copies then fell behind and stopped being maintained while still sitting in the main Java tree. Once Java EE moved to Eclipse and those libraries were being developed again, the JDK dropped its stale copies and applications were told to depend on the current versions like any other library.
+
+### Why Java 8 lived ten years
+
+Java 8 stayed in production for ten years because:
 
 1. Java 9 broke compatibility, so moving off 8 meant updating every framework, library and agent an application used, not just the JDK.
 2. Oracle ended free updates for 8 in 2019 and at the same time moved to a release every six months. The cadence change was a reaction to Java 9 itself: it had taken three and a half years and slipped twice because every feature waited for the module system, so Oracle decided releases would ship on a fixed date with whatever was ready, and mark every fourth one as long-term support. Sensible for the language, but organisations read the two changes together as "Java is now a subscription with a moving target" and froze on 8 rather than chase that target.
 3. Java 8 was good enough. Lambdas and streams were the last language features most application code needed, and it had four stable years before the break.
 
 Applications that ran unchanged from Java 5 to Java 8 could not move without their whole dependency tree moving first, and nobody forced the issue.
-
-Flags go on the `java` command line. `-X` flags are standard across JVMs (`-Xmx`), `-XX:` flags are HotSpot-specific and change between versions (`-XX:+UseG1GC`), `-D` sets system properties the application reads (`-Duser.timezone=UTC`). Where those flags live is a per-server question, and one of the things that separates Tomcat from Jetty below.
 
 ## Servlets, JSP and the WAR
 
@@ -475,36 +499,40 @@ On Tomcat the same four exist, and the sequence is the same, but the tarball col
 
 | Java word | What you would call it |
 |---|---|
-| JVM | the runtime process, the thing in `ps` |
-| JDK | the runtime plus compiler, the package you install |
+| AJP | Tomcat's binary protocol for a reverse proxy in front of it; use HTTP instead |
+| archive | a WAR file; the terms are interchangeable |
+| base | the instance config directory (Jetty) |
+| bean | a class with getters and setters |
 | bytecode | the portable machine code the JVM executes |
-| heap | the memory pool for objects, `-Xmx` sets the ceiling |
+| CATALINA_BASE, CATALINA_HOME | Tomcat's instance directory and program directory |
+| classpath | the library search path |
+| context | a deployed application and its URL prefix |
+| Coyote, Catalina, Jasper | Tomcat's connector layer, servlet container and JSP compiler |
+| environment | a Servlet API version in Jetty 12 (ee8, ee9, ee10) |
 | GC | the garbage collector, the JVM's memory reclaimer |
-| JIT | the runtime compiler that makes it fast after warm-up |
-| Java SE | the runtime and standard library |
+| heap | the memory pool for objects, `-Xmx` sets the ceiling |
+| home | the installed program (Jetty) |
 | Java EE, Jakarta EE | the server-side spec bundle |
+| Java SE | the runtime and standard library |
+| JDBC | the database driver API |
+| JDK | the runtime plus compiler, the package you install |
+| JETTY_BASE, JETTY_HOME | Jetty's instance directory and program directory |
+| JIT | the runtime compiler that makes it fast after warm-up |
+| JMX | the JVM's management interface |
+| JNDI | the JVM's in-process name lookup; how an app finds a database pool the server created |
+| JSP | a server-side template |
+| JVM | the runtime process, the thing in `ps` |
+| module | a plugin definition plus its ini (Jetty) |
+| record | an immutable struct, Java 16 onward |
+| RSS | resident set size, what the process occupies in RAM; for a JVM, roughly `-Xmx` plus a few hundred MB |
 | servlet | a request handler class |
 | servlet container | the application server |
-| JSP | a server-side template |
 | WAR | the application package |
 | web.xml | the application's deployment descriptor |
-| context | a deployed application and its URL prefix |
-| home | the installed program |
-| base | the instance config directory |
-| module | a plugin definition plus its ini |
-| environment | a Servlet API version (ee8, ee9, ee10) |
-| bean | a class with getters and setters |
-| record | an immutable struct, Java 16 onward |
-| JMX | the JVM's management interface |
-| JDBC | the database driver API |
-| JNDI | the JVM's in-process name lookup; how an app finds a database pool the server created |
-| AJP | Tomcat's binary protocol for a reverse proxy in front of it; use HTTP instead |
-| Coyote, Catalina, Jasper | Tomcat's connector layer, servlet container and JSP compiler |
-| classpath | the library search path |
 
 ## Other words you will meet
 
-**Bean**: a Java class with a no-argument constructor and `getX()` and `setX()` pairs. Sun coined it in 1996 for GUI components, then reused the word for everything: Enterprise JavaBeans for remoting, MBeans for management, Spring beans for dependency injection. Same convention, unrelated things.
+**Bean**: a Java class with a no-argument constructor and `getX()` and `setX()` pairs. Sun coined it in 1996 for GUI components, then reused the word for everything: Enterprise JavaBeans for remoting, MBeans for management, Spring beans for dependency injection. Same convention, unrelated things. The name is a coffee pun: Java is named after the coffee (the language was called Oak until a trademark search killed it in 1995), and a bean is the unit of coffee, so a reusable component became a JavaBean. There is no technical content in the word. The no-argument constructor is the part that matters: a tool that has never seen your class, a GUI builder, an XML file, a serialiser, can create an instance of any class by name with `new Whatever()` and then fill it in through the setters, without a person who has read the class. The cost is that a bean can exist half-initialised, with fields at their defaults until every setter has been called, which is the bug class records were designed to remove.
 
 **Record**: the modern replacement for the data-carrier half of the bean. Standard since Java 16 (2021). The bean version of a user object:
 
@@ -535,7 +563,7 @@ Constructor, accessors, `equals`, `hashCode` and `toString` are generated by the
 
 **AJP**, Apache JServ Protocol: a binary protocol Tomcat speaks on port 8009 so that a web server in front of it (Apache httpd with `mod_jk` or `mod_proxy_ajp`, or nginx with a third-party module) can forward requests to it more cheaply than re-encoding them as HTTP. It dates from 1997, when Tomcat could not serve static files or TLS well and Apache httpd did both, so the standard layout was httpd in front for static content and TLS, AJP behind for the servlets. Neither reason holds now: Tomcat serves static files and TLS fine, and HTTP/1.1 keep-alive makes the re-encoding cost negligible. AJP survives in old configurations and in a 2020 CVE (Ghostcat) that let anyone who could reach 8009 read files out of the WAR. Reverse proxy over plain HTTP with `mod_proxy_http` or nginx's `proxy_pass`, and if you inherit a Tomcat with an AJP connector enabled and nothing using it, remove the `Connector` from `server.xml`; since 9.0.31 it binds to localhost only by default, which is the project's own admission.
 
-**Spring, Spring Boot**: not Java EE. A framework that grew as a reaction to Java EE's weight, using plain classes with dependency injection instead of EJBs. Spring Boot bundles a servlet container inside the application jar so you do not need Tomcat or Jetty at all. When a Spring Boot application is instead built as a plain WAR, it runs on either.
+**Spring, Spring Boot**: not Java EE. A framework that grew as a reaction to Java EE's weight, using plain classes with dependency injection instead of EJBs. Dependency injection means a class does not create the things it needs (a database connection, a mail sender, another service); it declares that it needs them, and the framework creates them and hands them in at startup, wired according to configuration. Why you care: it is why a Spring application's behaviour is set by properties files and environment variables rather than by code, and why a misconfiguration shows up as a stack trace at startup saying which bean could not be created and what it was missing, rather than as a failure on the first request. It is also why a Spring application takes seconds to start; it is building and wiring hundreds of objects before it listens. Spring Boot bundles a servlet container inside the application jar so you do not need Tomcat or Jetty at all. When a Spring Boot application is instead built as a plain WAR, it runs on either.
 
 ## Practices that survive contact
 
@@ -558,7 +586,7 @@ The Jetty 12 Operations Guide at jetty.org is the only current book on running J
 
 ## Appendix: a Tomcat systemd unit that calls java directly
 
-`catalina.sh` is 500 lines of shell whose job is to compute a `java` command line. Under systemd it adds nothing: the unit can compute the same line once, in the open, and systemd handles the process lifetime. This is offered as a courtesy; every path, the user, the memory and the JDK flags must be adjusted to your install, and the unit assumes a tarball layout with `CATALINA_HOME` and `CATALINA_BASE` separated as described above.
+`catalina.sh` is 500 lines of shell whose job is to compute a `java` command line. Under systemd it adds nothing: the unit can compute the same line once, in the open, and systemd handles the process lifetime. The following systemd service unit is offered as a courtesy; every path, the user, the memory and the JDK flags must be adjusted to your install, and the unit assumes a tarball layout with `CATALINA_HOME` and `CATALINA_BASE` separated as described above.
 
 First, turn `setenv.sh` into a file systemd can read. `EnvironmentFile=` takes `KEY=VALUE` lines only: no `export`, no shell expansion, no quoting rules beyond plain double quotes, and any line that is commented out in `setenv.sh` must not be carried across, because a `# CATALINA_OPTS=...` that someone uncomments in the shell script will do nothing here. Produce it once and keep it under version control:
 
@@ -603,7 +631,3 @@ What each part is for. `$JAVA_OPTS` and `$CATALINA_OPTS` with a plain dollar are
 `SuccessExitStatus=143` is because `systemctl stop` sends SIGTERM, Tomcat shuts down cleanly on it and exits 143 (128 plus signal 15), and without this line systemd records every clean stop as a failure. There is no `ExecStop`: the shutdown port 8005 and its `SHUTDOWN` string are `catalina.sh stop`'s way of doing what SIGTERM does, and with systemd in charge you can set `port="-1"` on the `Server` element and close that socket for good.
 
 Once this runs, `bin/` is dead weight in the instance and `setenv.sh` is a file nobody should touch, which is worth a comment at the top of it pointing at `/etc/tomcat/app.env`.
-
----
-
-*Note to self: re-read the whole document top to bottom before publishing. The sections were edited out of order and one at a time; check that terms are defined before they are used, that the four-directories model matches what the Tomcat and Jetty sections say, and that the Jetty examples match a real 12.0.x install.*
