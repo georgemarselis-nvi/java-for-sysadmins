@@ -429,9 +429,13 @@ The WAR is unpacked into `$JETTY_BASE/work/` if that directory exists, otherwise
 
 A failed deployment looks like this on the console: a `WARN` line naming the WAR and the exception, then the stack trace, then `Started Server` anyway with the rest of the server up and the failed context returning 503. Jetty does not refuse to start because one WAR is broken. `start.jar` exits non-zero only if the server itself cannot start, a port in use for instance.
 
+### Undeploying
+
+Remove `app.war` (and `app.properties` if present) from `$JETTY_BASE/webapps/`. The scanner notices within its poll interval, stops the context and unloads it. The same class loader caveat applies as on Tomcat: threads and drivers the application left behind keep its classes reachable, and Jetty has no equivalent of the leak-prevention listener, so the practice is the same, stop the server, remove the WAR, start the server. With `work/` in use, the unpacked tree `work/jetty-0_0_0_0-8080-app_war-_app-any-*/` is left behind by design so you can inspect it; delete it by hand when you no longer need it. Without `work/`, the temporary directory disappears when the JVM exits. Nothing else references the application: there is no per-application XML in the base unless you created one, and the module inis do not know it existed.
+
 ### Logs
 
-By default Jetty logs to stderr, which under systemd is the journal. The `requestlog` module adds an NCSA-format access log under `$JETTY_BASE/logs/`, rotated daily; the `logging-logback` and `logging-log4j2` modules route the server's own log through those frameworks if you want files and levels. Nothing is appended forever by default, because there is no `catalina.out`.
+By default Jetty logs to stderr, which under systemd lands in the journal. The `requestlog` module adds an NCSA-format access log under `$JETTY_BASE/logs/`, rotated daily; the `logging-logback` and `logging-log4j2` modules route the server's own log through those frameworks if you want files and levels. Nothing is appended forever by default, because there is no `catalina.out`.
 
 ### Running it as a service
 
@@ -461,11 +465,11 @@ For any Java web application on Jetty there are four places, and confusion comes
 1. The Jetty program: `$JETTY_HOME`, here `/opt/jetty/12.0.x`. Never edited. Replaced whole at upgrade.
 2. The Jetty instance config: `$JETTY_BASE`, here `/opt/jetty/base/app`. Port, environment, modules, JVM flags, the WAR. The only thing you edit.
 3. The application's own config: wherever the application reads it from, typically `/etc/<app>/`. Database connection, data paths, external services. Jetty does not read this; the application does, after Jetty has started it.
-4. The application's data: wherever its configuration points, on a disk sized for it and outside both server trees. Jetty never touches it.
+4. The application's data: wherever the configuration of the application points, on a disk sized for it and outside both server trees, provided the application is well written. Jetty never touches it.
 
 Jetty starts, reads 2, loads the WAR from 2, the WAR starts, reads 3, works on 4.
 
-On Tomcat the same four exist, but 1 and 2 are usually one tree, which is why people cannot tell which of their edits are configuration and which are the program.
+On Tomcat the same four exist, and the sequence is the same, but the tarball collapses 1 and 2 into one tree: `conf/`, `webapps/`, `logs/` and `work/` sit beside `bin/` and `lib/` under the same directory, and `CATALINA_BASE` defaults to `CATALINA_HOME`. So on a stock Tomcat install, "the program" and "my configuration" are the same `ls` output, an upgrade is a merge rather than a swap, and a year in nobody can say which files under `/opt/tomcat` came from Apache and which from the last admin. Jetty makes the split mandatory: home contains no `webapps/`, no `logs/` and no `start.ini`, so it cannot be run as an instance by accident, and everything you did is by construction in base. Tomcat can be run the same way by setting `CATALINA_BASE`, and the distro packages do, but the tarball does not push you there and most installs never get there. That is the whole operational difference between the two; the engines are comparable, the layouts are not.
 
 ## Translation table
 
