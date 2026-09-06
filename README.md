@@ -30,38 +30,96 @@ Memory is not what `free` tells you. The JVM reserves a **heap** for objects, si
 
 Startup is slow and then fast. The interpreter runs first, the JIT kicks in after thousands of invocations, so a JVM is at its slowest in its first minute and at its fastest after an hour. Restarting to deploy throws that away every time, which is one more reason the one-WAR-per-JVM practice hurts.
 
-Names you will meet: **JDK**, Java Development Kit, is the compiler plus the runtime; **JRE**, Java Runtime Environment, was the runtime alone and is no longer shipped separately, so you install a JDK even to run things, the `-headless` package variants just omit the desktop libraries. **OpenJDK** is the open-source codebase; Oracle, Red Hat, Eclipse Temurin, Amazon Corretto, Azul and Microsoft all build it, pass the same compatibility kit, and differ in support terms and patch cadence, not behaviour. Version numbering went 1.0 to 1.8, then 9 onward with a new release every six months and a long-term-support release every two years: 8, 11, 17, 21, 25. Applications declare the minimum they compile against; Spring Boot 2 era applications want 11 or 17, Jetty 12 wants 17.
+Names you will meet:
 
-Which JDK to install: the distribution package, `java-17-openjdk-headless` on EL, `openjdk-17-jre-headless` on Debian. It is the same OpenJDK, patched by the distro, updated by `dnf` or `apt` with everything else, and inside the distro's security process. A vendor tarball is for two cases only: a version the distribution does not ship, or a container image with a specific JDK baked in. Pick an LTS version and never a six-month release or an early-access build: vendors support only LTS, ship security updates quarterly for those, and reserve the right to ship nothing for anything else. Do not start anything new on 8; it is 2014 code kept alive on paid support.
+- **JDK**, Java Development Kit: the compiler plus the runtime. The package you install.
+- **JRE**, Java Runtime Environment: the runtime alone. No longer shipped separately, so you install a JDK even to run things. The `-headless` package variants leave out the desktop libraries (AWT, Swing, fonts, printing), which are still part of the standard runtime because they were never removed, not because servers need them; the full package pulls in X11 and font dependencies for nothing. On a server, headless is the normal package.
+- **OpenJDK**: the open-source codebase. Several organisations build it into binaries: Oracle, Red Hat (the distro packages on EL), Eclipse Temurin (the Eclipse Foundation's neutral build, formerly AdoptOpenJDK), Amazon Corretto (Amazon's build of the same OpenJDK source, made because Amazon runs enormous amounts of Java internally and wanted to control its own patches; it is what you get by default on AWS machine images), Azul Zulu (a company that sells Java support), Microsoft. All pass the same compatibility kit and differ in support terms and patch cadence, not behaviour. The names matter only when you download a tarball; the distro package is Red Hat's or Debian's build and you never see them.
+- **Version numbers**, by epoch:
+  - Sun, 1996 to 1998: 1.0, 1.1.
+  - Sun, "Java 2", 1998 to 2006: 1.2, 1.3, 1.4, 5 (called 1.5 internally), 6. This is where the J2SE and J2EE names come from.
+  - Sun then Oracle, 2006 to 2014: 7 (2011, first Oracle release), 8 (2014). Still numbered 1.7 and 1.8 in `java -version` output.
+  - Oracle, six-month cadence, 2017 onward: 9, 10, 11, 12 and so on, one every March and September. Every fourth is long-term support: 11 (2018), 17 (2021), 21 (2023), 25 (2025). The rest are dead six months after release.
+  - Java 8 is the exception: it came out in 2014, but it is still supported by Red Hat and Azul and still in production everywhere. It was the last release before the Java 9 compatibility break, so it is the last version an old application runs on without its dependencies being updated first, and enough customers pay for that to keep the security patches coming. The full story is under "Why old applications refuse to run on a new JDK" below.
+- **Target version**: applications declare the minimum JDK they compile against. Spring Boot 2 era applications want 11 or 17, Jetty 12 wants 17.
 
-Why old applications refuse to run on a new JDK: Java 9 introduced the module system and Java 11 removed the Java EE pieces that had been bundled with the runtime since the 2000s (XML binding, SOAP, activation, CORBA). An application compiled against 8 that used them starts on 11 and dies with `ClassNotFoundException: javax.xml.bind.JAXBContext` or similar. That is the whole of the 8 to 11 pain: not the language, the missing jars. Applications fixed it by adding those libraries as ordinary dependencies, and anything maintained since 2019 has done so; anything that has not is telling you something about its maintenance.
+### Which JDK to install
+
+The distribution package, `java-17-openjdk-headless` on EL, `openjdk-17-jre-headless` on Debian. It is the same OpenJDK, patched by the distro, updated by `dnf` or `apt` with everything else, and inside the distro's security process. A vendor tarball is for two cases only: a version the distribution does not ship, or a container image with a specific JDK baked in. Pick an LTS version and never a six-month release or an early-access build: vendors support only LTS, ship security updates quarterly for those, and reserve the right to ship nothing for anything else. Do not start anything new on 8; it is 2014 code kept alive on paid support.
+
+### Why old applications refuse to run on a new JDK
+
+Java 9 introduced the module system and Java 11 removed the Java EE pieces that had been bundled with the runtime since the 2000s (XML binding, SOAP, activation, CORBA). An application compiled against 8 that used them starts on 11 and dies with `ClassNotFoundException: javax.xml.bind.JAXBContext` or similar. That is the whole of the 8 to 11 pain: not the language, the missing jars. Applications fixed it by adding those libraries as ordinary dependencies, and anything maintained since 2019 has done so; anything that has not is telling you something about its maintenance plan.
+
+### Why Oracle did that
+
+Sun's rule had been never to remove anything, so the runtime grew for twenty years into one monolithic jar, with libraries reaching freely into its internals, and nothing inside it could ever change. Java 9 put a fence around the internals so the JDK could evolve. Java 11 removed the Java EE libraries from the runtime. Those libraries had originally been developed as part of Java EE, and in the 2000s Sun had copied them into the standard runtime for convenience; the copies then fell behind and stopped being maintained while still sitting in the main Java tree. Once Java EE moved to Eclipse and those libraries were being developed again, the JDK dropped its stale copies and applications were told to depend on the current versions like any other library. Java 8 stayed in production for ten years because:
+
+1. Java 9 broke compatibility, so moving off 8 meant updating every framework, library and agent an application used, not just the JDK.
+2. Oracle ended free updates for 8 in 2019 and at the same time moved to a release every six months. The cadence change was a reaction to Java 9 itself: it had taken three and a half years and slipped twice because every feature waited for the module system, so Oracle decided releases would ship on a fixed date with whatever was ready, and mark every fourth one as long-term support. Sensible for the language, but organisations read the two changes together as "Java is now a subscription with a moving target" and froze on 8 rather than chase that target.
+3. Java 8 was good enough. Lambdas and streams were the last language features most application code needed, and it had four stable years before the break.
+
+Applications that ran unchanged from Java 5 to Java 8 could not move without their whole dependency tree moving first, and nobody forced the issue.
 
 Flags go on the `java` command line. `-X` flags are standard across JVMs (`-Xmx`), `-XX:` flags are HotSpot-specific and change between versions (`-XX:+UseG1GC`), `-D` sets system properties the application reads (`-Duser.timezone=UTC`). Where those flags live is a per-server question, and one of the things that separates Tomcat from Jetty below.
 
 ## Servlets, JSP and the WAR
 
-A **servlet** is a Java class that the server instantiates once and calls for every HTTP request. The server owns the sockets, the threads and the lifecycle; the class gets a request object and a response object. It replaced CGI, which forked a process per request, and in 1996 forking a JVM per request took seconds. One instance serves all requests concurrently, so a servlet is effectively a singleton and its instance fields are shared state.
+A **servlet** is a Java class that the server instantiates once and calls for every HTTP request. The server owns the sockets, the threads and the lifecycle; the class gets a request object and a response object. In 1996 the competing standard was CGI. CGI forked a process per request, and on the CPUs of the time forking a JVM per request took seconds, far from ideal. A servlet is loaded once and stays resident, so the JVM startup cost is paid once. One instance serves all requests concurrently. In software engineering terms, a servlet is effectively a singleton and its instance fields are shared state.
 
-The **Servlet API** is the contract between that class and the server. It is one of the Java EE specifications, and the one most applications actually use. Versions you will meet: Servlet 3.1 (2013, Java EE 7), Servlet 4.0 (2017, Java EE 8, the last `javax` version), Servlet 5.0 (Jakarta EE 9, the rename), Servlet 6.0 (Jakarta EE 10).
+The **Servlet API** is the contract between that class and the server. It is one of the Java EE specifications, and the one most applications actually use. Versions you will meet:
+
+- Servlet 3.1: 2013, Java EE 7.
+- Servlet 4.0: 2017, Java EE 8. The last `javax` version.
+- Servlet 5.0: 2020, Jakarta EE 9. Identical to 4.0 except that every package was renamed from `javax` to `jakarta`.
+- Servlet 6.0: 2022, Jakarta EE 10.
 
 **JSP**, JavaServer Pages, is HTML with embedded Java that the server compiles into a servlet at first request. It exists because writing HTML as string concatenation inside a servlet was unbearable. Modern applications use a template engine instead and never touch it.
 
-A **WAR**, Web Application Archive, is a zip file with a fixed layout. Servlet 2.2 introduced it in 1999 and it has not changed since. It is the deliverable you were handed.
+A **WAR file**, Web Application Archive, is a zip file with a fixed layout; the terms WAR, WAR file and archive are used interchangeably below. It was introduced by Servlet 2.2 in 1999 and the layout has not changed since. When a developer hands you a Java web application to run, this file is what they hand you. This is the directory layout as stated by the standard:
 
 ```
 app.war
-├── index.html               static content, served as-is
-├── css/  js/  images/       more static content
-├── META-INF/
-│   ├── MANIFEST.MF          jar manifest, build metadata
-│   └── context.xml          Tomcat-only: per-application context settings
-└── WEB-INF/                 never served to clients
-    ├── web.xml              deployment descriptor: servlets, mappings, filters, session config
-    ├── classes/             the application's own compiled classes and resource files
-    └── lib/                 third-party jars the application depends on
+├── index.html                  the landing page, static content
+├── css/
+│   └── style.css               stylesheet, static content
+├── js/
+│   └── app.js                  browser-side JavaScript, static content
+├── images/
+│   └── logo.png                image, static content
+├── META-INF/                   never served to clients
+│   ├── MANIFEST.MF             jar manifest, build metadata
+│   └── context.xml             Tomcat-only: per-application context settings
+└── WEB-INF/                    never served to clients
+    ├── web.xml                 deployment descriptor, see below
+    ├── classes/                the application's own compiled classes and resource files
+    │   ├── com/
+    │   │   └── example/
+    │   │       └── app/
+    │   │           ├── ApiServlet.class
+    │   │           └── LoginServlet.class
+    │   └── application.properties
+    └── lib/                    third-party jars the application depends on
+        ├── commons-lang3-3.14.0.jar
+        ├── jackson-databind-2.17.0.jar
+        └── mariadb-java-client-3.3.3.jar
 ```
 
-The server refuses to serve anything under `WEB-INF/` as a file: a request for `/WEB-INF/web.xml` gets a 404 by specification, so configuration and code cannot be downloaded by clients even though they sit inside the same archive as the static files. Nor can a client execute a class by asking for it. Classes never map to URLs. `web.xml` (or annotations in the classes) declares servlets by name and assigns each one URL patterns, for example `/api/*` to `ApiServlet` and `/login` to `LoginServlet`. When a request arrives, the server matches its path against those patterns and calls the one servlet that matches; a path that matches nothing gets a 404. A class under `WEB-INF/classes/` that no mapping names is unreachable from outside. This is the opposite of CGI or PHP, where a file on disk under the document root is executable because it is there. Everything outside `WEB-INF/` is a URL. `unzip -l app.war` shows you what you were given, and `unzip -p app.war WEB-INF/web.xml` shows what it expects of the server. Since Servlet 3.0 `web.xml` may be nearly empty, with servlets declared by annotations inside the classes instead, so an empty descriptor does not mean an empty application.
+`web.xml` is the deployment descriptor: the one XML file that tells the server what is inside the archive and how to wire it. It declares:
+
+- servlets: a name for each servlet and the class that implements it. The name is a label chosen by the developer and only used inside `web.xml`; the class is the compiled code under `WEB-INF/classes/`. For example, the name `api` for the class `com.example.app.ApiServlet`
+- servlet mappings: which URL pattern matches go to which servlet name. For example, the pattern `/api/*` maps to the name `api`, which the servlet declaration above ties to the class `com.example.app.ApiServlet`; so a request for `/api/users/42` runs `ApiServlet`. Likewise `/login` maps to the name `login`, declared as `com.example.app.LoginServlet`
+- filters and filter mappings: classes that run before or after a servlet on a URL pattern, for logging, authentication, compression
+- listeners: classes to call when the application starts, stops, or a session is created or destroyed
+- session configuration: timeout in minutes, cookie name, cookie flags
+- welcome files: what to serve when a request names a directory rather than a file. The application declares one ordered list of filenames: `index.html`, by default, followed by `index.jsp`. Whichever directory is requested, the server looks for those names in that directory, in that order, and serves the first one it finds. Same behaviour as Apache's `DirectoryIndex`
+- error pages: which page to show for a given HTTP status or exception
+- context parameters: name and value pairs the application reads at startup, the place a developer puts settings they expect you to edit
+- security constraints: which URL patterns require authentication and which roles
+
+The server refuses to serve anything under `WEB-INF/` or `META-INF/` as a file: a request for `/WEB-INF/web.xml` or `/META-INF/MANIFEST.MF` gets a 404 by specification, so configuration and code cannot be downloaded by clients even though they sit inside the same archive as the static files. Everything else in the archive is fetchable: `curl http://host/app/js/app.js` returns the file. A client cannot execute a class by asking for it. Classes never map to URLs. `web.xml` (or annotations in the classes, more on those below) declares servlets by name and assigns each one URL patterns. For example, `/api/*` to `ApiServlet` and `/login` to `LoginServlet`. When a request arrives, the server matches its path against those patterns and calls the one servlet that matches; a path that matches nothing gets a 404. A class under `WEB-INF/classes/` that no mapping names is unreachable from outside. This is the opposite of CGI or PHP, where a file on disk under the document root is executable because it is there. `unzip -l app.war` shows you what you were given, and `unzip -p app.war WEB-INF/web.xml` shows what it expects of the server. Since Servlet 3.0 (2009) `web.xml` may be nearly empty, because everything it declares can be declared in the source code, as **annotations**. An annotation is a marker prefixed with `@` written directly above a class in the Java source. The compiler keeps it inside the `.class` file, and the server reads it at startup. So `@WebServlet("/api/*")` above the class `ApiServlet` does the job of both a servlet entry and a servlet-mapping entry in `web.xml`: it names the servlet, ties it to that class and assigns it the URL pattern, in one line next to the code it describes. `@WebFilter` and `@WebListener` do the same for filters and listeners. Developers prefer this because the declaration lives with the class it applies to instead of in a separate file that drifts out of date.
+
+To find the annotations, the server scans every class under `WEB-INF/classes/` and every jar under `WEB-INF/lib/` when the application starts, and combines the annotations it finds with the declarations in `web.xml`. The result is a union, not a concatenation: each servlet, filter and listener is one entry keyed by its name, and when `web.xml` and an annotation both declare the same one, `web.xml` wins. Order does not matter for servlets, since URL matching is by pattern rather than by declaration order; it does matter for filters, which run in the order `web.xml` lists them, with annotated filters appended after. A `web.xml` that sets `metadata-complete="true"` tells the server to skip the scan entirely and trust the file alone. Two consequences for you: an empty descriptor does not mean an empty application, so `web.xml` alone no longer tells you the routes; and the scan is part of why a Java application takes seconds to start.
 
 ## Tomcat
 
