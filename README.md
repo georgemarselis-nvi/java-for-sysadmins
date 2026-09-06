@@ -4,7 +4,7 @@ George Marselis
 
 Copyright 2026 George Marselis. Licensed under the GNU General Public License, version 3; see the LICENSE file in this repository.
 
-You have been handed a WAR file and told to run it. Nobody told you what a WAR is, why the server that runs it has two home directories, or why the documentation reads like it was written for someone else. It was. This is the translation.
+You have been handed a WAR file and told to run it. Nobody told you what a WAR is, why the server that runs it has two home directories, or why the documentation reads like it was written people who understand Klingon translations of Akkadian text. This documents attempts to answer those questions.
 
 ## The model in five lines
 
