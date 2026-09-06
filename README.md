@@ -1,5 +1,9 @@
 # Java for Sysadmins
 
+George Marselis
+
+Copyright 2026 George Marselis. Licensed under the GNU General Public License, version 3; see the LICENSE file in this repository.
+
 You have been handed a WAR file and told to run it. Nobody told you what a WAR is, why the server that runs it has two home directories, or why the documentation reads like it was written for someone else. It was. This is the translation.
 
 ## The model in five lines
@@ -230,12 +234,27 @@ Undeploying means deleting `webapps/app.war` and `webapps/app/`. The autodeploye
 Given all of the above, the reliable undeploy is a restart with the files gone:
 
 1. `systemctl stop tomcat` (or whatever runs it). Confirm with `ps` that the JVM is gone; a stuck shutdown leaves it running and the next steps delete files out from under it.
-2. Remove `webapps/app.war` and `webapps/app/`. Both, or the autodeployer recreates one from the other at the next start.
-3. Remove `conf/Catalina/localhost/app.xml` if it exists, or its settings apply to the next thing deployed under that name.
-4. Remove `work/Catalina/localhost/app/`, the compiled JSPs and saved sessions, or the next deploy of a changed WAR may load stale ones.
-5. Start Tomcat and check that `catalina.out` no longer mentions `app` during startup; the deploy lines name each application as it comes up.
+2. Compare `webapps/app/` with `unzip -l app.war`. If the directory holds files the WAR does not, the application has been writing into its own install directory; move those files out to a directory outside the Tomcat tree before going further. See the next section.
+3. Remove `webapps/app.war` and `webapps/app/`. Both, or the autodeployer recreates one from the other at the next start.
+4. Remove `conf/Catalina/localhost/app.xml` if it exists, or its settings apply to the next thing deployed under that name.
+5. Remove `work/Catalina/localhost/app/`, the compiled JSPs and saved sessions, or the next deploy of a changed WAR may load stale ones.
+6. Start Tomcat and check that `catalina.out` no longer mentions `app` during startup; the deploy lines name each application as it comes up.
 
-Before step 2, look inside `webapps/app/` and compare it with `unzip -l app.war`. Some applications write into their own unpacked directory at runtime: uploaded files, generated reports, downloaded tools, plugins, even jars dropped into `WEB-INF/lib/` by an in-application installer. A bioinformatics platform the author runs does this, and after a year `webapps/app/` is several gigabytes of which the WAR accounts for a hundred megabytes. Deleting the directory deletes that data, and redeploying a new WAR over it does something worse: the autodeployer removes the old directory first, then unpacks the new WAR, so the data is gone either way and nobody warned you. If the diff shows files that are not in the WAR, move them out to a path under `/data` before undeploying, and then find the application's configuration option that points it there permanently, because an application that writes into its own install directory has a bug you have just made yours. The same applies to Jetty's `work/` and to any exploded directory: the WAR is the only thing that should be in it.
+### Applications that write into their own directory
+
+Some applications write into their own unpacked directory at runtime: uploaded files, generated reports, downloaded tools, plugins, even jars dropped into `WEB-INF/lib/` by an in-application installer. A bioinformatics platform the author runs does this, and after a year `webapps/app/` is several gigabytes of which the WAR accounts for a hundred megabytes. An application that writes into its own install directory is a bug, and the moment you run it the bug is yours.
+
+The autodeployer makes it worse. In the normal case, where Tomcat itself unpacked `webapps/app/` from the WAR, dropping a new `app.war` makes the autodeployer remove that directory first and then unpack the new WAR into a fresh one. The data goes with the old directory and nothing warns you. A directory Tomcat did not create, one unpacked by hand, is left alone, but do not rely on that.
+
+First, look for the application's own configuration option that points the writes elsewhere; most such applications have one that nobody documented, or a hard-coded relative path that is a one-line fix upstream. When there is no such option, or you cannot wait for the release, three measures in order of preference:
+
+Deploy it as an exploded directory you own, not as a WAR. Unpack the WAR yourself into `webapps/app/`, never put `app.war` beside it, and set `autoDeploy="false"` on the `Host` in `server.xml`. Tomcat then treats the directory as yours and never deletes it. Upgrades become your procedure: stop Tomcat, unpack the new WAR somewhere else, `rsync` its contents over `webapps/app/` with `--exclude` for each subdirectory the application writes into, start Tomcat. You have traded the autodeployer for a script you can read and put under version control, which is a good trade.
+
+Symlink the subdirectories it writes into out of the tree: `webapps/app/data -> /srv/app/data`, one link per subdirectory. Tomcat's own delete routine removes the link rather than following it, so even an accidental redeploy loses the link and not the data. Do not use a bind mount for this; `rm -rf` walks into a bind mount and deletes its contents, and Tomcat's delete behaves the same way. Verify the symlink behaviour once on the version you run, by linking a scratch directory and redeploying, before trusting it with anything.
+
+Report it upstream as what it is. For a maintained project that is a small pull request. For an archived one, the exploded-directory deployment above is the permanent answer.
+
+The same applies to Jetty's `work/` and to any exploded directory on any server: the WAR is the only thing that should be in it.
 
 ### The manager application
 
@@ -430,7 +449,7 @@ For any Java web application on Jetty there are four places, and confusion comes
 1. The Jetty program: `$JETTY_HOME`, here `/opt/jetty/12.0.x`. Never edited. Replaced whole at upgrade.
 2. The Jetty instance config: `$JETTY_BASE`, here `/opt/jetty/base/app`. Port, environment, modules, JVM flags, the WAR. The only thing you edit.
 3. The application's own config: wherever the application reads it from, typically `/etc/<app>/`. Database connection, data paths, external services. Jetty does not read this; the application does, after Jetty has started it.
-4. The application's data: typically a `/data` disk. Jetty never touches it.
+4. The application's data: wherever its configuration points, on a disk sized for it and outside both server trees. Jetty never touches it.
 
 Jetty starts, reads 2, loads the WAR from 2, the WAR starts, reads 3, works on 4.
 
