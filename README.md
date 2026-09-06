@@ -8,10 +8,10 @@ You have been handed a WAR file and told to run it. Nobody told you what a WAR i
 
 ## The model in five lines
 
-1. `java` is one process, the JVM. Tomcat, Jetty and your application are all classes loaded inside it. Its memory ceiling is `-Xmx`, and you set it.
-2. The application arrives as a WAR: a zip with `WEB-INF/web.xml` describing which URL goes to which class. Everything under `WEB-INF/` and `META-INF/` is hidden from clients; everything else is a URL.
-3. Tomcat and Jetty are the programs that load the WAR and serve it. Each implements a version of the Servlet API; the WAR must have been built against the same one, and the `javax` to `jakarta` rename in 2020 is the line that matters.
-4. There are four directories: the server program, the server instance config, the application's own config, the application's data. Confusion comes from collapsing them. Tomcat's tarball collapses the first two; Jetty refuses to.
+1. `java` is one process, the JVM. Tomcat, Jetty and your application are all classes loaded inside it. It has a built-in memory ceiling is set by `-Xmx`. You set it.
+2. The application arrives as a WAR: a zip file with `WEB-INF/web.xml` describing which URL goes to which class. Everything under `WEB-INF/` and `META-INF/` is hidden from clients; everything else is a URL.
+3. Tomcat and Jetty are the programs that load the WAR and serve it. Each implements a version of the so-called Servlet API; the WAR must have been built against the same version of the API.
+4. There are four directories: the server program, the server instance config, the application's own config, the application's data. Confusion exists because the documentation collapses them into one location. Tomcat's tarball collapses the first two; Jetty refuses to.
 5. One application per JVM, restart to deploy, delete what you do not run.
 
 The rest of this document explains each of those, and why you should walk softly and carry a big stick with a rusty nail on one end around Java developers.
