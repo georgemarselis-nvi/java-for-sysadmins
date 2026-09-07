@@ -16,7 +16,7 @@ The rest of this document explains each of these points and why, around Java dev
 
 ## Why this document exists
 
-Java has its own vocabulary for things you already know and the words point at the wrong Linux concepts. "Home" is not `$HOME`. "Container" is not Docker. "Module" is not a kernel module. "Context" is not a kubectl context. Once each word is translated, what is underneath is a program, a config directory, a plugin list and an application. There is no document that does this, because the people who know it have not had to explain it to an outsider and those who did learn it did not write their knowledge down.
+Java has its own vocabulary for things you already know and the words point at the wrong Linux concepts. "Home" is not `$HOME`. "Container" is not Docker. "Module" is not a kernel module. "Context" is not a kubectl context. Once each word is translated, what is underneath is a program, a config directory, a plugin list and an application. There is no document that does this, because the people who know it have not had to explain it to an outsider and those who did learn it did not write their knowledge down. I also do not want anybody to go through the same pain I did learning about  java. This is not rocket science, a junior can do it. But a junior needs a proper explanation, rather than cuts and bruises from the trenches. It is  like norman doors: if it looks easy, it should be doable, with no headaches.
 
 ## A short history of Java, with Sun in mind
 
