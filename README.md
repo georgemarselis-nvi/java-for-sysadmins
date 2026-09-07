@@ -59,7 +59,7 @@ Names you will meet:
 
 ### Sizing memory for a Java process
 
-A C daemon uses what it needs and gives it back; its RSS (resident set size, the RES figure from `top` mentioned above) is a measurement. A JVM uses what you allowed it and keeps it; its resident size is set by `-Xmx`. You cannot size a machine for a JVM by watching what it uses; you have to work out what it needs and set it.
+A C daemon uses what it needs and gives it back; its RSS (resident set size, the RES figure from `top` mentioned above) is a measurement. A JVM uses what you allowed it and keeps it; its resident size is set by `-Xmx`. You cannot size a machine for a JVM by watching what it uses; you have to work out what it needs and set it. And what you are sizing for is not the application. It is the application plus the server (Tomcat or Jetty, their thread pools and their own classes) plus the parts of the language runtime that get loaded to run both: the standard library, the JIT compiler and its output, the garbage collector and its bookkeeping. On a small application the runtime and the server outweigh the application itself.
 
 Start from what the process actually needs, not from what it uses. `top` will show a JVM at or near its `-Xmx` after an hour whatever the load, because the collector lets garbage accumulate until it has to run; a full heap is normal. The number that matters is the live set: how much survives a full collection. Get it from the JVM, not from the OS: `jcmd <pid> GC.run` followed by `jcmd <pid> GC.heap_info` on JDK 17 or later prints heap use after a forced collection and that figure is the application's real footprint at that moment. Sample it under real load, at the end of a busy day, a few times.
 
