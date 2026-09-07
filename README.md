@@ -1,7 +1,5 @@
 # Java for Sysadmins
 
-George Marselis
-
 Copyright 2026 George Marselis. Licensed under the GNU General Public License, version 3; see the LICENSE file in this repository.
 
 You have been handed a WAR file and told to run it. Nobody told you what a WAR is, why the server that runs it has two home directories or why the documentation assumes you already know. This document covers what the documentation assumes.
