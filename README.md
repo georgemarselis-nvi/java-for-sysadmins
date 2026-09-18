@@ -578,7 +578,15 @@ Each of these follows from something explained above.
 
 ## Where to read next
 
-The Jetty 12 Operations Guide at jetty.org is the only current book on running Jetty; there is no printed one. The Eclipse Foundation article "Jakarta EE 8: Past, Present and Future" covers the platform history from 1996. The Register's March 2018 article on the Jakarta rename covers the trademark dispute. Nothing covers Tomcat from the operator's side.
+You will find books such as
+* O'Reilly's Tomcat: The Definitive Guide (2nd edition, 2007)
+* Wrox's Professional Apache Tomcat
+* Apress's Pro Apache Tomcat
+* Packt's Apache Tomcat 7 Essentials (2012, the most recent)
+
+None of them cover tomcat from the operator's side. Furthermore, they all describe Tomcat 5 to 7 and all predate the `jakarta` rename. The configuration reference for Tomcat (at [tomcat.apache.org](https://tomcat.apache.org] ) is more current than any of them. Do not expect a gentle introduction.
+
+The Jetty 12 Operations Guide at jetty.org is the only current book on running Jetty; there is no printed one. The Eclipse Foundation article "Jakarta EE 8: Past, Present and Future" covers the platform history from 1996. The Register's March 2018 article on the Jakarta rename covers the trademark dispute.
 
 ## Appendix: a Tomcat systemd unit that calls java directly
 
